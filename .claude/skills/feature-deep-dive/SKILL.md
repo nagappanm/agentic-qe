@@ -64,13 +64,42 @@ Flag immediately: changes to migrations, lockfiles, CI config, public exports, o
 Walk this ladder in order. Stop when you have the requirement, but record which rungs were empty.
 
 1. **PR body + linked issues** — `gh pr view <target> --json body`, then open every `#123` / `JIRA-456` reference.
-2. **PRD / spec / RFC / design docs**
+2. **PRD / spec / RFC / design docs** — search on **two tracks**, because they hit different targets:
+
+   **Track A — identifiers** (finds *code and tests*, rarely docs): the symbols the diff adds.
+   ```bash
+   git diff <base>...<head> \
+     | grep -oE "^\+export (async function|function|const|class|interface|type) [A-Za-z_]+" \
+     | awk '{print $NF}' | sort -u
+   ```
+
+   **Track B — user-visible behavior phrases** (finds *docs*): the strings the diff makes a
+   user or operator actually see. Docs describe behavior, not symbol names.
+   ```bash
+   git diff <base>...<head> | grep -E "^\+" \
+     | grep -oE "(Error\(|message:|description:)[^;]*'[^']{15,}'" \
+     | grep -oE "'[^']{15,}'" | sort -u
+   ```
+
+   Then search each track against the right tree:
    ```bash
    # scope to doc dirs first — a repo-wide name match drowns in source files
    find docs/ doc/ spec/ specs/ .github/ -iname "*.md" 2>/dev/null \
      | grep -iE "prd|spec|rfc|design|requirement"
-   grep -ril "<feature-keyword>" docs/ --include="*.md" | head -20
+   grep -rl "<identifier>" src/ tests/ --include="*.ts"     # track A
+   grep -ril "<behavior phrase>" docs/ --include="*.md"     # track B
    ```
+
+   **Triage the hits — a mention is not a spec.** A broad keyword returns a dozen docs that
+   reference the topic in passing. Rank before reading:
+   ```bash
+   # match density, not mere presence
+   for f in $(grep -ril "<term>" docs/ --include="*.md"); do
+     echo "$(grep -ic '<term>' "$f") $f"; done | sort -rn | head
+   ```
+   Read in this order: the doc whose **title or a heading owns the topic** → highest match
+   density → most recently modified before the change. One hit with one mention can still be
+   the only real source; say so rather than padding the ledger with near-misses.
 3. **ADRs** — architectural constraints the feature must respect.
    ```bash
    find docs -iname "ADR-*" | xargs grep -l "<feature-keyword>"
@@ -116,10 +145,13 @@ Then state the **before → after** delta for each changed behavior, including d
 ```bash
 # who imports the changed modules — anchor on the path so generic names
 # like `memory` don't match every file containing that word
-for f in $(git diff --name-only <base>...<head> | grep -E '\.(ts|js|py)$'); do
+for f in $(git diff --name-only <base>...<head> | grep -E '\.(ts|js|py)$' | grep -v test); do
   b=$(basename "$f" | sed 's/\.[^.]*$//')
-  echo "== $f"
-  grep -rnE "(from|require\(|import\()[[:space:]]*['\"][^'\"]*/$b(\.js|\.ts)?['\"]" src/ --include="*.ts" | head -10
+  # a barrel file is imported by its DIRECTORY name; matching on "index"
+  # matches every barrel in the repo and inflates the count wildly
+  if [ "$b" = "index" ]; then m=$(basename "$(dirname "$f")"); else m="$b"; fi
+  echo "== $f  (module: $m)"
+  grep -rnE "(from|require\(|import\()[[:space:]]*['\"][^'\"]*/$m(/index)?(\.js|\.ts)?['\"]" src/ --include="*.ts" | head -10
 done
 
 # what the PR newly exposes — then grep each symbol for call sites
@@ -137,6 +169,7 @@ Then walk the **non-code impact checklist** — these are where feature PRs actu
 | Data & migrations | Schema change, backfill, or persisted shape change? Reversible? | |
 | Config & flags | New env var, default changed, flag defaulting on? | |
 | Contracts & events | Request/response, message, or event payload changed? Consumers? | |
+| Producer / consumer completeness | If the change makes some input **required**, does a producer exist for every required input? Enumerate both sides and diff them. | |
 | Concurrency & state | Shared state, caching, ordering, idempotency? | |
 | Performance | New N+1, sync I/O on a hot path, unbounded loop or buffer? | |
 | Security | New input boundary, authz decision, secret handling, PII, path traversal? | |
@@ -248,5 +281,7 @@ After this skill:
 - **Deleted tests are a signal.** If the diff removes or skips tests, find out which behavior stopped being guaranteed.
 - **CLI and MCP paths diverge.** A fix or feature landing on one path is routinely absent on the other — check both, always, and list the missing one as an impact area.
 - **A grep that finds nothing has two meanings.** Either nothing calls it, or it's wired dynamically. Decide which before you size the blast radius — under-counting callers is how a "low risk" label lands on the riskiest change in the PR.
+- **Barrel files lie about their blast radius.** `index.ts` matched by basename reports every barrel import in the repo — a real run here returned 473 importers where the true count was 2. Resolve barrels by directory name, and sanity-check any count that looks too big to be real.
+- **A new required input with no producer is the highest-value finding in the diff.** When a feature starts demanding evidence, config, or an event, list what it requires and what actually writes it. The gap is silent at build time and total at runtime — the gate simply never opens.
 - **Generated files hide real changes.** Lockfiles, snapshots, and build output pad the diff; exclude them from the inventory but read migrations and schema files line by line.
 - **Don't grade the code.** Quality judgment belongs in `/pr-review`. This skill explains and scopes; mixing the two buries the testing signal.
