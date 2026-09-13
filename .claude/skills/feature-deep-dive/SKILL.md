@@ -21,7 +21,7 @@ Not the same as `/pr-review` (which judges the PR) or `/sherlock-review` (which 
 ## Arguments
 
 - `<target>` — PR number (`1234`), PR URL, branch (`feat/x`), or range (`main...HEAD`). If omitted, ask the user; do not guess from the current branch.
-- `--depth quick|standard|deep` — `quick` = Phases 1–3 only, `standard` (default) = all phases, `deep` = adds reverse-dependency tracing and a test-coverage delta per changed file.
+- `--depth quick|standard|deep` — `quick` = Phases 1–3 (what it is and how it works, no impact or charter); `standard` (default) = all six phases, tracing first-order callers only; `deep` = adds transitive caller tracing past the first hop and a per-file test-coverage delta.
 - `--save <path>` — write the briefing to a file. Default is chat only. Never write to the repo root; use `docs/reviews/` or `reports/`.
 
 ## Ground Rules
@@ -145,7 +145,10 @@ Then state the **before → after** delta for each changed behavior, including d
 ```bash
 # who imports the changed modules — anchor on the path so generic names
 # like `memory` don't match every file containing that word
-for f in $(git diff --name-only <base>...<head> | grep -E '\.(ts|js|py)$' | grep -v test); do
+# NOTE: exclude test FILES, not every path containing "test" — a bare
+# `grep -v test` also swallows src/**/test-executor.ts and cli/commands/test.ts
+for f in $(git diff --name-only <base>...<head> | grep -E '\.(ts|js|py)$' \
+           | grep -vE '(^|/)(tests?|__tests__|e2e)/|\.(test|spec)\.[jt]sx?$'); do
   b=$(basename "$f" | sed 's/\.[^.]*$//')
   # a barrel file is imported by its DIRECTORY name; matching on "index"
   # matches every barrel in the repo and inflates the count wildly
@@ -155,7 +158,7 @@ for f in $(git diff --name-only <base>...<head> | grep -E '\.(ts|js|py)$' | grep
 done
 
 # what the PR newly exposes — then grep each symbol for call sites
-grep -nE "^\+.*(export (async )?function|export class|export const)" <(git diff <base>...<head>)
+git diff <base>...<head> | grep -nE "^\+.*(export (async )?function|export class|export const)"
 ```
 
 An **empty importer list is a result, not a dead end**: the file is either a true entry point (CLI command, route handler, worker) or reached some other way. Find the wiring before concluding nothing depends on it — dynamic `import()`, DI containers, command registries, and config-driven plugin loaders all hide callers from a static grep.
@@ -207,20 +210,25 @@ Cover these classes deliberately — an empty class is itself a finding:
 Then the **coverage delta** (`--depth deep`): for each changed source file, list the tests that already exercise it and the ones that don't exist yet.
 
 ```bash
-git diff --name-only <base>...<head> | grep -v test
-# for each: find matching tests
+# same exclusion as Phase 4 — never filter source files by the substring "test"
+git diff --name-only <base>...<head> | grep -vE '(^|/)(tests?|__tests__|e2e)/|\.(test|spec)\.[jt]sx?$'
+# for each: find matching tests, then confirm the symbol is actually exercised
 find tests -iname "*<module>*"
 grep -rn "<exported-symbol>" tests/ | head
 ```
+
+A file that has a matching test *file* is not necessarily covered: check that the
+symbol appears in an assertion, not just an import.
 
 Finally, state **what not to test** and why — unchanged paths, vendored code, already-covered branches. A charter that scopes out is a charter people follow.
 
 ## Phase 6 — Report
 
 ```markdown
-# Feature Deep Dive: <PR title> (#<number>)
+# Feature Deep Dive: <title>
+<!-- title = PR title, or the commit subject / branch name when the target is not a PR -->
 
-**Author**: <author> · **Base**: <base> ← **Head**: <head> · **Files**: <n> · **±LOC**: <n>
+**Target**: <#number | commit-range | branch> · **Author**: <author> · **Base**: <base> ← **Head**: <head> · **Files**: <n> · **±LOC**: <n>
 
 ## 1. What this feature does
 <plain-language paragraph — user, trigger, observable outcome>
@@ -281,6 +289,7 @@ After this skill:
 - **Deleted tests are a signal.** If the diff removes or skips tests, find out which behavior stopped being guaranteed.
 - **CLI and MCP paths diverge.** A fix or feature landing on one path is routinely absent on the other — check both, always, and list the missing one as an impact area.
 - **A grep that finds nothing has two meanings.** Either nothing calls it, or it's wired dynamically. Decide which before you size the blast radius — under-counting callers is how a "low risk" label lands on the riskiest change in the PR.
+- **A filter that drops files does it silently.** `grep -v test` over a changed-file list looks harmless and quietly removed two of eight source files here — both of them evidence producers, the most important files in the diff. Count the files going into each phase against the diff's own file count; if the numbers differ, find out which ones vanished before you interpret anything.
 - **Barrel files lie about their blast radius.** `index.ts` matched by basename reports every barrel import in the repo — a real run here returned 473 importers where the true count was 2. Resolve barrels by directory name, and sanity-check any count that looks too big to be real.
 - **A new required input with no producer is the highest-value finding in the diff.** When a feature starts demanding evidence, config, or an event, list what it requires and what actually writes it. The gap is silent at build time and total at runtime — the gate simply never opens.
 - **Generated files hide real changes.** Lockfiles, snapshots, and build output pad the diff; exclude them from the inventory but read migrations and schema files line by line.
