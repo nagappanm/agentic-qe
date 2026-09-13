@@ -234,7 +234,17 @@ function escapeCell(s) {
 const text = (t, marks) => ({ type: 'text', text: String(t), ...(marks ? { marks } : {}) });
 const strong = (t) => text(t, [{ type: 'strong' }]);
 const code = (t) => text(t, [{ type: 'code' }]);
-const para = (...content) => ({ type: 'paragraph', content: content.filter(Boolean) });
+/**
+ * Drops nulls AND empty text nodes. Jira rejects a `{type:"text",text:""}`
+ * node outright, and the natural way to write a conditional fragment —
+ * `text(cond ? ` in ${x}ms` : '')` — produces exactly that whenever the field
+ * is absent. Guarding here rather than at each call site means an optional
+ * field going missing on real data cannot invalidate the whole document.
+ */
+const para = (...content) => ({
+  type: 'paragraph',
+  content: content.filter((n) => n && !(n.type === 'text' && !n.text)),
+});
 const heading = (level, t) => ({ type: 'heading', attrs: { level }, content: [text(t)] });
 const codeBlock = (t, language) => ({
   type: 'codeBlock',
@@ -427,8 +437,15 @@ function main() {
   if (!report) lib.fail(OP, `${args.in} does not contain a defect report (expected schema_version and fingerprint).`);
 
   let content;
-  if (format === 'jira-adf') content = JSON.stringify(renderAdf(report), null, 2);
-  else content = renderMarkdown(report, { forGithub: format === 'github-body' });
+  if (format === 'jira-adf') {
+    // Compact, not pretty-printed: this is a payload for createJiraIssue, never
+    // something a human reads, and indentation would both waste more than half
+    // the 32000-character description budget and make the length guard below
+    // measure padding Jira never receives. Pipe through `jq` to inspect it.
+    content = JSON.stringify(renderAdf(report));
+  } else {
+    content = renderMarkdown(report, { forGithub: format === 'github-body' });
+  }
 
   if (args.out) {
     fs.mkdirSync(require('path').dirname(require('path').resolve(args.out)), { recursive: true });

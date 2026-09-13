@@ -33,11 +33,39 @@ function vibiumAvailable() {
 
 function vibium(args, { allowFail = false } = {}) {
   try {
-    return execFileSync('vibium', args, { encoding: 'utf8', timeout: 60000, maxBuffer: 32 * 1024 * 1024 });
+    return execFileSync('vibium', args, {
+      encoding: 'utf8',
+      timeout: 60000,
+      maxBuffer: 32 * 1024 * 1024,
+      // Capture the child's stderr instead of letting it inherit ours. This
+      // script's contract is a single JSON envelope on stdout, and vibium
+      // writes launch diagnostics to stderr — a caller redirecting 2>&1 would
+      // otherwise get that prose prepended to the JSON and fail to parse it.
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch (err) {
     if (allowFail) return null;
     throw err;
   }
+}
+
+/**
+ * Distinguish "the browser engine cannot run here" from "the page did not
+ * load". The first is an environment gap the caller should treat exactly like
+ * a missing vibium binary — degrade to manual evidence, exit 2. The second is
+ * a real result the caller needs to see, so it stays a failure.
+ */
+function isEngineUnavailable(message) {
+  return [
+    /cannot run as root/i,
+    /chromedriver not found/i,
+    /failed to launch browser/i,
+    /failed to create session/i,
+    /session not created/i,
+    /only supports chrome version/i,
+    /failed to fetch version info/i,
+    /executable doesn't exist|no such file or directory.*chrome/i,
+  ].some((re) => re.test(message));
 }
 
 function vibiumJson(args, { allowFail = false } = {}) {
@@ -179,7 +207,34 @@ function main() {
   try {
     vibium(['go', String(args.url)]);
   } catch (err) {
-    lib.fail(OP, `vibium could not load ${args.url}: ${String(err.message).slice(0, 300)}`, [
+    // vibium reports launch diagnostics on stderr, which execFileSync exposes
+    // on err.stderr now that we capture it rather than inherit it.
+    const detail = `${err.message || ''}\n${err.stderr || ''}`.trim();
+
+    if (isEngineUnavailable(detail)) {
+      lib.emit(
+        lib.envelope(
+          OP,
+          'skipped',
+          {
+            summary:
+              `The vibium binary is installed but its browser could not start, so no DOM evidence could be captured. ` +
+              `Build the report with manually supplied components and evidence instead — this is an environment gap, not a defect-report failure. ` +
+              `Engine said: ${detail.split('\n')[0].slice(0, 200)}`,
+            reason: 'browser-engine-unavailable',
+            remediation: [
+              'Running as root? Set VIBIUM_CHROME_ARGS=--no-sandbox, or run as a non-root user (preferred — the sandbox is a security boundary)',
+              'Missing or mismatched chromedriver? Run `vibium install` to fetch a matching Chrome for Testing pair',
+              'Air-gapped or proxied host? `vibium install` needs googlechromelabs.github.io; see the qe-browser SKILL.md workaround for using a system chromium',
+              'Or hand-author components[]/evidence[] and pass them to build-report.js --evidence',
+            ],
+          },
+          { vibiumUnavailable: true }
+        )
+      );
+    }
+
+    lib.fail(OP, `vibium could not load ${args.url}: ${detail.slice(0, 300)}`, [
       'Confirm the URL is reachable from this machine',
       'For an authenticated page, restore session state first (see qe-browser Pattern 4)',
     ]);

@@ -72,7 +72,9 @@ That last row closes DOM → source file → who fixes it, which is what actuall
 
 Pass `--selector` or `--testid`. Without either, attribution degrades to page-level and the report says so.
 
-**No browser?** The script exits 2 with `vibiumUnavailable: true` — the same contract `qe-browser` uses. That is an environment gap, not a failure: hand-author `components[]` and `evidence[]` and continue at Phase 2. Browser driving is entirely `qe-browser`'s job; this skill only shapes what comes back.
+**No usable browser?** The script exits 2 with `vibiumUnavailable: true` — the same contract `qe-browser` uses. This covers both cases that leave you without DOM evidence: vibium not installed, and vibium installed but unable to launch a browser (running as root without `--no-sandbox`, a chromedriver/Chrome version mismatch, or a host that cannot reach Chrome for Testing). Both are environment gaps rather than failures, and both mean the same thing to a caller: hand-author `components[]` and `evidence[]` and continue at Phase 2. A genuine page-load failure — connection refused, DNS, timeout — stays exit 1, because that is a real result you need to see.
+
+Browser driving is entirely `qe-browser`'s job; this skill only shapes what comes back. Child stderr is captured rather than inherited, so the JSON envelope on stdout stays parseable even when a caller redirects `2>&1`.
 
 ## Phase 2 — Build and validate
 
