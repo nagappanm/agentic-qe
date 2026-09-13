@@ -1,21 +1,21 @@
 {
   "$schema": "https://agentic-qe.dev/schemas/skill-manifest.json",
   "version": "2.0.0",
-  "generatedAt": "2026-09-13T04:30:19.090Z",
+  "generatedAt": "2026-09-13T18:40:21.588Z",
   "generator": "scripts/update-skill-manifest.ts",
   "trustTierPolicy": "ADR-056",
   "summary": {
-    "tier0": 54,
+    "tier0": 55,
     "tier1": 4,
     "tier2": 7,
     "tier3": 56,
-    "total": 121
+    "total": 122
   },
   "validationStatus": {
     "passing": 56,
     "failing": 0,
     "unknown": 11,
-    "skipped": 54
+    "skipped": 55
   },
   "skillsByTier": {
     "tier3": [
@@ -781,6 +781,11 @@
         "name": "exploratory-testing-advanced",
         "category": "testing-methodologies",
         "file": "exploratory-testing-advanced/SKILL.md"
+      },
+      {
+        "name": "feature-deep-dive",
+        "category": "investigation",
+        "file": "feature-deep-dive/SKILL.md"
       },
       {
         "name": "flow-nexus-neural",
@@ -2405,6 +2410,14 @@
         "session-based"
       ],
       "lastUpdated": "2025-12-02"
+    },
+    "feature-deep-dive": {
+      "trustTier": 0,
+      "category": "investigation",
+      "validation": {
+        "status": "skipped"
+      },
+      "file": "feature-deep-dive/SKILL.md"
     },
     "flow-nexus-neural": {
       "trustTier": 0,
