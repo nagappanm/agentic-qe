@@ -17,36 +17,63 @@
  * flags that the failing element is unidentified.
  */
 
-const { execFileSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const lib = require('./lib.js');
 
 const OP = 'capture';
 
-function vibiumAvailable() {
-  const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['vibium'], {
-    encoding: 'utf8',
-  });
-  return probe.status === 0 && String(probe.stdout).trim().length > 0;
+/**
+ * Browser driving belongs to qe-browser, so this script goes through its engine
+ * layer rather than spawning a browser binary itself. That means defect-report
+ * inherits whichever engine qe-browser is configured for — Vibium by default,
+ * Playwright via QE_BROWSER_ENGINE=playwright — with no code here that knows
+ * the difference.
+ */
+function loadEngine() {
+  const candidates = [
+    path.resolve(__dirname, '..', '..', 'qe-browser', 'scripts', 'lib', 'engine.js'),
+    path.resolve(process.cwd(), '.claude', 'skills', 'qe-browser', 'scripts', 'lib', 'engine.js'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      try {
+        return require(c);
+      } catch (_err) {
+        /* try next */
+      }
+    }
+  }
+  return null;
 }
 
+const engine = loadEngine();
+
+function engineAvailable() {
+  return engine !== null;
+}
+
+/**
+ * Run one engine command, returning stdout or null.
+ * Engine stderr is captured by the backends rather than inherited, so the
+ * single JSON envelope this script writes to stdout stays parseable even when
+ * a caller redirects 2>&1.
+ */
 function vibium(args, { allowFail = false } = {}) {
-  try {
-    return execFileSync('vibium', args, {
-      encoding: 'utf8',
-      timeout: 60000,
-      maxBuffer: 32 * 1024 * 1024,
-      // Capture the child's stderr instead of letting it inherit ours. This
-      // script's contract is a single JSON envelope on stdout, and vibium
-      // writes launch diagnostics to stderr — a caller redirecting 2>&1 would
-      // otherwise get that prose prepended to the JSON and fail to parse it.
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    if (allowFail) return null;
+  const res = engine.run(args, { timeoutMs: 60000 });
+  if (res && res.unavailable) {
+    const err = new Error(res.message);
+    err.engineUnavailable = true;
     throw err;
   }
+  if (res.status !== 0) {
+    if (allowFail) return null;
+    const err = new Error(`${args[0]} failed: ${(res.stderr || res.stdout || '').trim()}`);
+    err.stderr = res.stderr;
+    throw err;
+  }
+  return res.stdout;
 }
 
 /**
@@ -166,6 +193,43 @@ function resolveOwner(file, repoRoot) {
   return ranked.length ? ranked[0][0] : null;
 }
 
+
+/**
+ * Read a list out of an engine response regardless of which field it arrived
+ * under. The engines disagree — qe-browser's assert.js reads a bare array or
+ * `.entries`, while other responses use `.messages`/`.requests`. A mismatch
+ * here is silent: it yields an empty list, so a page full of console errors
+ * would look clean and the report would omit its most important evidence.
+ */
+function normalizeList(payload, fields) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const f of fields) {
+    if (Array.isArray(payload[f])) return payload[f];
+  }
+  return [];
+}
+
+
+/** Current page URL, or null when there is no live session yet. */
+function currentUrl() {
+  try {
+    const raw = vibium(['eval', '--json', 'location.href'], { allowFail: true });
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const value = parsed && (parsed.result !== undefined ? parsed.result : parsed);
+    return typeof value === 'string' ? value.replace(/^"|"$/g, '') : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/** Compare URLs ignoring a trailing slash, so /checkout and /checkout/ match. */
+function sameLocation(a, b) {
+  const norm = (u) => String(u).replace(/\/+$/, '').replace(/^https?:\/\//, '');
+  return norm(a) === norm(b);
+}
+
 function main() {
   const args = lib.parseArgs(process.argv.slice(2));
   const started = Date.now();
@@ -176,14 +240,14 @@ function main() {
     ]);
   }
 
-  if (!vibiumAvailable()) {
+  if (!engineAvailable()) {
     lib.emit(
       lib.envelope(
         OP,
         'skipped',
         {
           summary:
-            'vibium binary not found on PATH, so no DOM evidence could be captured. Build the report with manually supplied components and evidence instead — this is an environment gap, not a defect-report failure.',
+            'The qe-browser engine layer could not be loaded, so no DOM evidence could be captured. Build the report with manually supplied components and evidence instead — this is an environment gap, not a defect-report failure.',
           reason: 'browser-engine-unavailable',
           remediation: [
             'Install vibium globally: `npm install -g vibium`',
@@ -204,14 +268,30 @@ function main() {
   const attachments = [];
 
   // --- Navigate and map -----------------------------------------------------
+  // Navigating resets the page, which discards the console errors and network
+  // activity that led to the defect. So skip it when the browser is already on
+  // the requested URL — the normal case, because you drive the page to the
+  // failure (via qe-browser batch) and *then* capture. --no-navigate forces
+  // the skip; --force-navigate forces a reload.
+  let navigated = false;
   try {
-    vibium(['go', String(args.url)]);
+    const current = currentUrl();
+    const sameUrl = current && sameLocation(current, String(args.url));
+    const skip = args['no-navigate'] === true || (sameUrl && args['force-navigate'] !== true);
+    if (skip) {
+      warnings.push(
+        `Reused the browser's existing page at ${current} instead of reloading, so evidence from earlier interactions is preserved. Pass --force-navigate to reload.`
+      );
+    } else {
+      vibium(['go', String(args.url)]);
+      navigated = true;
+    }
   } catch (err) {
-    // vibium reports launch diagnostics on stderr, which execFileSync exposes
-    // on err.stderr now that we capture it rather than inherit it.
+    // The engine backends capture their child stderr rather than inheriting it,
+    // and surface it on err.stderr.
     const detail = `${err.message || ''}\n${err.stderr || ''}`.trim();
 
-    if (isEngineUnavailable(detail)) {
+    if (err.engineUnavailable || isEngineUnavailable(detail)) {
       lib.emit(
         lib.envelope(
           OP,
@@ -306,7 +386,7 @@ function main() {
 
   // --- Console + network evidence ------------------------------------------
   const consoleMsgs = vibiumJson(['console'], { allowFail: true });
-  const consoleList = (consoleMsgs && (consoleMsgs.messages || consoleMsgs.logs)) || [];
+  const consoleList = normalizeList(consoleMsgs, ['entries', 'messages', 'logs']);
   for (const msg of consoleList) {
     const level = String(msg.level || msg.type || 'log').toLowerCase();
     if (!['error', 'warning', 'warn', 'severe'].includes(level)) continue;
@@ -323,7 +403,7 @@ function main() {
   }
 
   const net = vibiumJson(['network'], { allowFail: true });
-  const requests = (net && (net.requests || net.entries)) || [];
+  const requests = normalizeList(net, ['entries', 'requests']);
   for (const req of requests) {
     const status = req.status || req.response?.status;
     const failed = status === undefined || status === 0 || status >= 400;
@@ -346,7 +426,7 @@ function main() {
   // --- Screenshot -----------------------------------------------------------
   const shotPath = args.screenshot || path.join('.aqe', 'defect-reports', `capture-${Date.now()}.png`);
   fs.mkdirSync(path.dirname(shotPath), { recursive: true });
-  if (vibium(['screenshot', shotPath], { allowFail: true }) !== null && fs.existsSync(shotPath)) {
+  if (vibium(['screenshot', '-o', shotPath, '--full-page'], { allowFail: true }) !== null && fs.existsSync(shotPath)) {
     attachments.push({ kind: 'screenshot', path: shotPath, description: 'Page state at capture time', redacted: false });
   } else {
     warnings.push('Screenshot capture failed; report will have no visual evidence.');

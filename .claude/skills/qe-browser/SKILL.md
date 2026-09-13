@@ -69,7 +69,7 @@ This workaround is verified working on Debian bookworm aarch64 with chromium 146
 
 ## Headless mode
 
-Helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) automatically inject `--headless` into every `vibium` invocation because the qe-browser skill is designed for QE/CI use cases where there's no display server. **Vibium itself defaults to "visible by default"** — running `vibium go` on a headless container without `--headless` fails with `Missing X server or $DISPLAY`.
+Helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) run headless by default on either engine because the qe-browser skill is designed for QE/CI use cases where there's no display server. **Vibium itself defaults to "visible by default"** — running `vibium go` on a headless container without `--headless` fails with `Missing X server or $DISPLAY`.
 
 Opt out for interactive debugging:
 ```bash
@@ -81,6 +81,34 @@ When you call `vibium` directly (not through a helper), pass `--headless` yourse
 vibium --headless go https://example.com
 vibium --headless title
 ```
+
+## Engine selection (ADR-127)
+
+The helper scripts run on **Vibium by default**. Playwright is available as an opt-in second backend for hosts where Vibium cannot run — chiefly air-gapped or proxy-restricted machines, since Vibium downloads Chrome for Testing lazily from `googlechromelabs.github.io` on first use.
+
+```bash
+# default — unchanged, no env var needed
+node .claude/skills/qe-browser/scripts/assert.js --checks '...'
+
+# opt in to Playwright
+QE_BROWSER_ENGINE=playwright node .claude/skills/qe-browser/scripts/assert.js --checks '...'
+```
+
+Both engines speak the same argv vocabulary behind `lib/engine.js`, so all five primitives — and every skill that calls them — work unchanged on either. Nothing about engine choice appears in primitive code.
+
+| Variable | Effect |
+|---|---|
+| `QE_BROWSER_ENGINE` | `vibium` (default) or `playwright`. An unrecognised value falls back to `vibium`. |
+| `QE_BROWSER_HEADED=1` | Run headed, on either engine. |
+| `QE_BROWSER_EXECUTABLE_PATH` | Playwright only: use a specific Chrome/Chromium binary instead of the bundled one. |
+| `QE_BROWSER_NO_SANDBOX=1` | Playwright only: add `--no-sandbox`. Needed when running as root; prefer a non-root user, since the sandbox is a security boundary. |
+| `QE_BROWSER_SESSION_DIR` | Playwright only: where the browser session and profile live (default `~/.cache/qe-browser`). |
+
+**There is no automatic fallback between engines, by design.** Visual-diff baselines are renderer-specific, so an engine that switched underneath a suite would manufacture false visual regressions. Each baseline records the engine that produced it, and a cross-engine comparison is refused with an actionable message rather than reported as a diff. Baselines created before ADR-127 carry no engine metadata and are still accepted.
+
+Playwright must be installed separately (`npm install -g playwright`); it is not an `aqe init` dependency, so the default install footprint is unchanged. If it is missing, the engine reports the usual `status: "skipped"` / `vibiumUnavailable: true` contract rather than failing.
+
+Two behaviours legitimately differ by engine: element-scoped screenshots (`visual-diff.js --selector`) work on Playwright but throw on Vibium v26.3.x, which does not support them; and the two renderers produce different pixels, per the baseline note above.
 
 ## Activation
 

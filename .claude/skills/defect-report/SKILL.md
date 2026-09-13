@@ -72,9 +72,21 @@ That last row closes DOM → source file → who fixes it, which is what actuall
 
 Pass `--selector` or `--testid`. Without either, attribution degrades to page-level and the report says so.
 
-**No usable browser?** The script exits 2 with `vibiumUnavailable: true` — the same contract `qe-browser` uses. This covers both cases that leave you without DOM evidence: vibium not installed, and vibium installed but unable to launch a browser (running as root without `--no-sandbox`, a chromedriver/Chrome version mismatch, or a host that cannot reach Chrome for Testing). Both are environment gaps rather than failures, and both mean the same thing to a caller: hand-author `components[]` and `evidence[]` and continue at Phase 2. A genuine page-load failure — connection refused, DNS, timeout — stays exit 1, because that is a real result you need to see.
+**Drive the page to the failure first.** Capture reads the browser's *current* state, so reach the broken state with `qe-browser`'s `batch.js`, then capture:
 
-Browser driving is entirely `qe-browser`'s job; this skill only shapes what comes back. Child stderr is captured rather than inherited, so the JSON envelope on stdout stays parseable even when a caller redirects `2>&1`.
+```bash
+node .claude/skills/qe-browser/scripts/batch.js --steps '[
+  {"action":"go","url":"http://localhost:3000/checkout"},
+  {"action":"click","selector":"[data-testid=\"place-order\"]"},
+  {"action":"wait_load"}]'
+node .claude/skills/defect-report/scripts/capture-dom-context.js --url http://localhost:3000/checkout --testid order-summary --out capture.json
+```
+
+Capture will **not** re-navigate when the browser is already on the requested URL, because reloading would discard the console errors and network activity that are the evidence. Pass `--force-navigate` to reload anyway, or `--no-navigate` to always reuse the current page.
+
+**Engine.** Browser driving is entirely `qe-browser`'s job — this skill calls its engine layer and has no engine-aware code, so it runs on Vibium by default and on Playwright with `QE_BROWSER_ENGINE=playwright` (ADR-127). Child stderr is captured rather than inherited, so the JSON envelope on stdout stays parseable even when a caller redirects `2>&1`.
+
+**No usable browser?** The script exits 2 with `vibiumUnavailable: true` — the same contract `qe-browser` uses. This covers every case that leaves you without DOM evidence: the engine layer missing, the engine's browser failing to launch (running as root without a no-sandbox flag, a chromedriver/Chrome version mismatch, a host that cannot reach Chrome for Testing). All are environment gaps rather than failures, and all mean the same thing to a caller: hand-author `components[]` and `evidence[]` and continue at Phase 2. A genuine page-load failure — connection refused, DNS, timeout — stays exit 1, because that is a real result you need to see.
 
 ## Phase 2 — Build and validate
 

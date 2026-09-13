@@ -34,6 +34,7 @@ const {
   runOrSkip,
   rethrowIfUnavailable,
 } = require('./lib/vibium');
+const engine = require('./lib/engine');
 
 const BASELINE_DIR = path.join(process.cwd(), '.aqe', 'visual-baselines');
 
@@ -59,29 +60,45 @@ function vibiumPicturesDir() {
 }
 
 function captureScreenshot(selector, outputPath) {
-  if (selector) {
+  const onVibium = engine.selectedEngine() === engine.VIBIUM;
+
+  // Element-scoped capture is a Vibium v26.3.x gap, not a universal one: the
+  // Playwright backend does it natively via locator.screenshot().
+  if (selector && onVibium) {
     throw new Error(
       'vibium screenshot --selector is not supported in Vibium v26.3.x. ' +
       'Drop the --selector argument and crop the resulting full-page PNG with ' +
-      'a separate image-processing step (e.g. ImageMagick `convert -crop`). ' +
-      'Tracking upstream — if Vibium adds --selector support, this script ' +
-      'should switch to passing it through.'
+      'a separate image-processing step (e.g. ImageMagick `convert -crop`), ' +
+      'or run this with QE_BROWSER_ENGINE=playwright, which supports it. ' +
+      'Tracking upstream — if Vibium adds --selector support, this branch goes away.'
     );
   }
+
   const basename = path.basename(outputPath);
-  const args = ['screenshot', '-o', basename, '--full-page'];
+  // Vibium ignores the directory component and writes to its own Pictures dir;
+  // Playwright honours the full path. Pass the full path (harmless to Vibium,
+  // correct for Playwright) and resolve wherever the file actually landed.
+  const args = ['screenshot', '-o', onVibium ? basename : outputPath, '--full-page'];
+  if (selector && !onVibium) args.push('--selector', selector);
   const res = vibium(args);
   if (res.status !== 0) {
-    throw new Error(`vibium screenshot failed: ${res.stderr.trim() || res.stdout.trim()}`);
+    throw new Error(`screenshot failed: ${res.stderr.trim() || res.stdout.trim()}`);
   }
-  // Vibium wrote the file to ~/Pictures/Vibium/<basename>, not outputPath.
-  // Copy it to where the caller asked. Use copy-then-unlink so we leave
-  // Vibium's own dir clean for the next run.
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+  // Engine-agnostic resolution: prefer the path we asked for, then fall back to
+  // Vibium's hardcoded Pictures dir. Checking the requested path first is what
+  // lets the same primitive serve both engines.
+  if (fs.existsSync(outputPath)) return outputPath;
+
   const vibiumPath = path.join(vibiumPicturesDir(), basename);
   if (!fs.existsSync(vibiumPath)) {
-    throw new Error(`screenshot output not created at ${vibiumPath} (vibium said: ${res.stdout.trim()})`);
+    throw new Error(
+      `screenshot output not created at ${outputPath} or ${vibiumPath} (engine said: ${res.stdout.trim()})`
+    );
   }
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  // Copy-then-unlink so Vibium's own dir stays clean for the next run.
   fs.copyFileSync(vibiumPath, outputPath);
   fs.unlinkSync(vibiumPath);
   return outputPath;
@@ -110,6 +127,37 @@ function parsePngSize(buffer) {
 
 function hashBuffer(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+
+/**
+ * Baselines are renderer-specific: the same page screenshotted by Vibium's
+ * Chrome and by Playwright's Chromium differs at the pixel level from font
+ * rasterisation and compositing alone. Recording the engine alongside each
+ * baseline lets a later run refuse a meaningless cross-engine comparison
+ * rather than report it as a visual regression.
+ */
+function baselineMetaPath(baselinePath) {
+  return baselinePath.replace(/\.png$/, '.meta.json');
+}
+
+function writeBaselineMeta(baselinePath, engineId) {
+  try {
+    fs.writeFileSync(
+      baselineMetaPath(baselinePath),
+      JSON.stringify({ engine: engineId, createdAt: new Date().toISOString() }, null, 2)
+    );
+  } catch (_err) {
+    /* metadata is advisory; never fail a capture over it */
+  }
+}
+
+function readBaselineMeta(baselinePath) {
+  try {
+    return JSON.parse(fs.readFileSync(baselineMetaPath(baselinePath), 'utf8')).engine || null;
+  } catch (_err) {
+    return null; // Pre-existing baseline with no metadata — allow, stay compatible.
+  }
 }
 
 function compareWithPixelmatch(baselineBuf, currentBuf, diffPath) {
@@ -209,6 +257,7 @@ function main() {
 
     if (!fs.existsSync(baselinePath) || updateBaseline) {
       fs.writeFileSync(baselinePath, currentBuf);
+      writeBaselineMeta(baselinePath, engine.selectedEngine());
       const size = parsePngSize(currentBuf) || { width: 0, height: 0 };
       return emit(
         envelope({
@@ -234,6 +283,18 @@ function main() {
       );
     }
 
+    const baselineEngine = readBaselineMeta(baselinePath);
+    const currentEngine = engine.selectedEngine();
+    if (baselineEngine && baselineEngine !== currentEngine) {
+      // Cross-renderer comparison produces real pixel differences that are not
+      // regressions. Reporting them as visual failures would train people to
+      // ignore this check, so refuse instead of emitting a bogus diff.
+      throw new Error(
+        `baseline "${sanitized}" was captured with the ${baselineEngine} engine but this run uses ${currentEngine}. ` +
+        `Pixel output differs between renderers, so the comparison would be meaningless. ` +
+        `Re-run with QE_BROWSER_ENGINE=${baselineEngine}, or re-baseline on this engine with --update-baseline.`
+      );
+    }
     const baselineBuf = fs.readFileSync(baselinePath);
     let cmp = compareWithPixelmatch(baselineBuf, currentBuf, diffPath);
     if (cmp === null) cmp = compareFallback(baselineBuf, currentBuf);
