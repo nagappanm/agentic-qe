@@ -1,0 +1,251 @@
+{
+  "schema_version": "1.0.0",
+  "fingerprint": "0000000000000000",
+  "title": "OrderSummary fails to render totals when PRICING_V2 is off, blocking checkout completion",
+  "digest": "Checkout is unusable for ~40% of traffic. POST /api/v2/orders returns 200 OK but omits `data.total` when the backend PRICING_V2 flag is off, while the front-end OrderSummary component dereferences it unconditionally (EV-03). Neither side is individually wrong: the front-end was shipped against a contract the backend only honours with the flag on. Suspected layer is contract, high confidence — the fix is either a backend flag-independent `total` or a front-end guard, and the owning teams should pick.",
+  "classification": {
+    "severity": "critical",
+    "priority": "P0",
+    "defect_type": "integration-contract",
+    "reliability": "always",
+    "regression_since": "web@4.12.0 / order-svc@2.8.1"
+  },
+  "environment": {
+    "tier": "staging",
+    "url": "https://staging.example.com/checkout",
+    "app_version": "web@4.12.3",
+    "build_sha": "a3f91c2",
+    "backend_version": "order-svc@2.8.4",
+    "browser": "Chrome 141.0.7390.54",
+    "viewport": "1440x900",
+    "os": "macOS 15.3",
+    "locale": "en-US",
+    "feature_flags": {
+      "PRICING_V2": false,
+      "CHECKOUT_REDESIGN": true
+    }
+  },
+  "reproduction": {
+    "preconditions": [
+      "Signed in as a standard customer with a non-empty cart",
+      "Backend feature flag PRICING_V2 is OFF for the tenant",
+      "At least one line item with a promotional discount applied"
+    ],
+    "steps": [
+      "Navigate to https://staging.example.com/checkout with a cart containing a discounted item",
+      "Enter valid shipping details and continue to the payment step",
+      "Click the 'Place order' button",
+      "Observe the order summary panel renders blank and the confirmation never appears"
+    ],
+    "executable": {
+      "engine": "qe-browser",
+      "steps": [
+        { "action": "go", "url": "https://staging.example.com/checkout" },
+        { "action": "fill", "ref": "@e4", "text": "221B Baker Street" },
+        { "action": "click", "ref": "@e9" },
+        { "action": "click", "ref": "@e12" },
+        { "action": "assert", "checks": [{ "kind": "no_console_errors" }] }
+      ],
+      "verified_replayable": false
+    }
+  },
+  "expected": "POST /api/v2/orders returns a body containing data.total as a number, and OrderSummary renders the order total followed by the confirmation screen. The total field is documented as required in openapi/orders.yaml#/components/schemas/OrderResponse.",
+  "actual": "The response is 200 OK but data.total is absent entirely. OrderSummary throws \"TypeError: Cannot read properties of undefined (reading 'toFixed')\" at OrderSummary.tsx:42, the summary panel renders blank, and the confirmation screen never mounts. No error is shown to the user.",
+  "components": [
+    {
+      "id": "C-01",
+      "role_in_defect": "failing",
+      "selector": "[data-testid=\"order-summary\"] .summary-total",
+      "dom_path": [
+        { "tag": "main", "id": "checkout-root", "role": "main" },
+        { "tag": "section", "classes": ["checkout-grid"] },
+        { "tag": "aside", "testid": "order-summary", "classes": ["summary", "summary--sticky"] },
+        { "tag": "div", "classes": ["summary-total"] }
+      ],
+      "framework_component": "CheckoutPage > OrderSummary",
+      "framework": "react",
+      "detection_method": "data-testid",
+      "testid": "order-summary",
+      "aria": { "role": "complementary", "label": "Order summary" },
+      "text_content": "",
+      "bounding_box": { "x": 968, "y": 240, "width": 384, "height": 0 },
+      "state_snapshot": {
+        "disabled": false,
+        "visible": true,
+        "aria-invalid": "false"
+      },
+      "source_file": "src/checkout/OrderSummary.tsx:42",
+      "source_basis": "stack frame in EV-03 plus declaration of OrderSummary",
+      "owner": "unassigned"
+    },
+    {
+      "id": "C-02",
+      "role_in_defect": "trigger",
+      "selector": "[data-testid=\"place-order\"]",
+      "framework_component": "CheckoutPage > PlaceOrderButton",
+      "framework": "react",
+      "detection_method": "data-testid",
+      "testid": "place-order",
+      "aria": { "role": "button", "label": "Place order" },
+      "text_content": "Place order",
+      "state_snapshot": { "disabled": true, "visible": true },
+      "source_file": "src/checkout/PlaceOrderButton.tsx",
+      "source_basis": "declaration of PlaceOrderButton"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EV-01",
+      "layer": "ui",
+      "kind": "dom-state",
+      "summary": "User clicks [data-testid=\"place-order\"]; the button transitions to disabled and shows its spinner",
+      "timestamp": "2026-09-12T14:22:10.000Z",
+      "component_ref": "C-02",
+      "source": "capture-dom-context"
+    },
+    {
+      "id": "EV-02",
+      "layer": "network",
+      "kind": "http-response",
+      "summary": "POST /api/v2/orders -> 200 OK in 41ms, response body has no `total` key under `data`",
+      "timestamp": "2026-09-12T14:22:10.041Z",
+      "correlation_id": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "detail": "{\"data\":{\"orderId\":\"ord_8821\",\"currency\":\"USD\",\"lineItems\":[{\"sku\":\"SKU-1\",\"qty\":2}],\"subtotal\":149.98}}",
+      "source": "vibium-network"
+    },
+    {
+      "id": "EV-03",
+      "layer": "ui",
+      "kind": "js-exception",
+      "summary": "TypeError: Cannot read properties of undefined (reading 'toFixed') at OrderSummary.tsx:42",
+      "timestamp": "2026-09-12T14:22:10.063Z",
+      "correlation_id": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "component_ref": "C-01",
+      "detail": "TypeError: Cannot read properties of undefined (reading 'toFixed')\n    at OrderSummary (src/checkout/OrderSummary.tsx:42:31)\n    at renderWithHooks (react-dom.development.js:15486:18)\n    at CheckoutPage (src/checkout/CheckoutPage.tsx:88:14)",
+      "source": "browser-console"
+    },
+    {
+      "id": "EV-04",
+      "layer": "backend",
+      "kind": "server-log",
+      "summary": "order-svc serialised the response through the legacy pricing path because PRICING_V2 resolved false for this tenant; that path never populates `total`",
+      "timestamp": "2026-09-12T14:22:10.038Z",
+      "correlation_id": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "detail": "level=info svc=order-svc route=POST:/api/v2/orders flag.PRICING_V2=false serializer=LegacyOrderSerializer fields=[orderId,currency,lineItems,subtotal]",
+      "source": "kibana"
+    },
+    {
+      "id": "EV-05",
+      "layer": "config",
+      "kind": "metric",
+      "summary": "PRICING_V2 is enabled for 3 of 5 staging tenants, matching the intermittent reports across environments",
+      "timestamp": "2026-09-12T14:25:00.000Z",
+      "source": "manual"
+    }
+  ],
+  "timeline": ["EV-01", "EV-04", "EV-02", "EV-03", "EV-05"],
+  "boundary": {
+    "correlation_id": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "request": {
+      "method": "POST",
+      "url": "https://staging.example.com/api/v2/orders",
+      "status": 200,
+      "duration_ms": 41,
+      "request_headers": {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "x-api-version": "2"
+      },
+      "response_headers": {
+        "content-type": "application/json",
+        "x-request-id": "req_01JF2K8Q"
+      },
+      "service": "order-svc"
+    },
+    "contract_delta": {
+      "contract_source": "openapi/orders.yaml#/components/schemas/OrderResponse",
+      "diffs": [
+        {
+          "path": "data.total",
+          "kind": "missing_field",
+          "expected": "number (required)",
+          "actual": "undefined",
+          "consumer_impact": "OrderSummary.tsx:42 calls total.toFixed(2) unconditionally, throwing a TypeError that unmounts the summary panel and halts checkout"
+        },
+        {
+          "path": "data.tax",
+          "kind": "missing_field",
+          "expected": "number (required)",
+          "actual": "undefined",
+          "consumer_impact": "Not yet dereferenced by the front-end, so latent — but it will break the same way once the tax line ships"
+        }
+      ]
+    }
+  },
+  "fault_localization": {
+    "suspected_layer": "contract",
+    "confidence": "high",
+    "rationale": "The backend returned 200 with a body it considers complete (EV-04 shows LegacyOrderSerializer deliberately emitting four fields), and the front-end parsed a body it considers malformed (EV-03). Both behave as written, so neither is individually at fault — the shared contract is. EV-02 and EV-04 share correlation id 00-4bf92f35..., confirming this is one request and not two unrelated failures, and EV-05 explains why it reproduces on some tenants and not others.",
+    "evidence_refs": ["EV-02", "EV-03", "EV-04", "EV-05"],
+    "alternatives": [
+      {
+        "layer": "frontend",
+        "why_less_likely": "OrderSummary is correct against the documented OpenAPI schema, which marks total as required. A defensive guard would mask the failure rather than fix the divergence — worth adding, but not the root cause.",
+        "ruled_out_by": ["EV-02"]
+      },
+      {
+        "layer": "backend",
+        "why_less_likely": "order-svc is behaving exactly as its flag configuration specifies, with no error or exception on its side.",
+        "ruled_out_by": ["EV-04"]
+      },
+      {
+        "layer": "network",
+        "why_less_likely": "The response arrived intact in 41ms with a 200 status and well-formed JSON; nothing was truncated or dropped in transit.",
+        "ruled_out_by": ["EV-02"]
+      }
+    ],
+    "open_questions": [
+      "Was PRICING_V2 intended to be a permanent branch or a migration flag due for removal? That decides whether the fix belongs in the serializer or the flag config.",
+      "Does the production tenant set have PRICING_V2 off anywhere? If so this is a live outage, not a staging-only defect."
+    ]
+  },
+  "impact": {
+    "description": "Customers on tenants with PRICING_V2 off cannot complete checkout. The order summary renders blank and the confirmation screen never appears, so the user has no indication whether their order was placed — some will retry and risk duplicate orders.",
+    "users_affected": "All checkout users on the 2 of 5 staging tenants with PRICING_V2 off (~40% of staging traffic)",
+    "business_impact": "Complete checkout blockage on affected tenants; duplicate-order risk from user retries",
+    "workaround": "Enabling PRICING_V2 for the tenant restores the flow, but that is a config change with pricing consequences and is not a safe blanket remedy",
+    "first_observed": "2026-09-12T14:22:10.000Z",
+    "occurrences": 7
+  },
+  "triage": {
+    "suggested_team": "Checkout",
+    "suggested_assignee": "unassigned",
+    "assignee_basis": "No git history available for src/checkout/OrderSummary.tsx in this fixture",
+    "labels": ["checkout", "integration-contract", "regression", "P0"],
+    "linked_tests": [
+      "tests/integration/checkout/order-response-contract.test.ts — does not currently assert data.total is present",
+      "tests/e2e/checkout.spec.ts — runs only with PRICING_V2 on, so this path is untested"
+    ]
+  },
+  "attachments": [
+    {
+      "kind": "screenshot",
+      "path": ".aqe/defect-reports/checkout-blank-summary.png",
+      "description": "Blank order summary panel after clicking Place order",
+      "redacted": false
+    },
+    {
+      "kind": "har",
+      "path": ".aqe/defect-reports/checkout.har",
+      "description": "Full network capture including the POST /api/v2/orders exchange",
+      "redacted": false
+    }
+  ],
+  "provenance": {
+    "generated_by": "defect-report@1.0.0",
+    "generated_at": "2026-09-12T14:30:00.000Z",
+    "reporter": "qe-agent",
+    "evidence_sources": ["qe-browser/capture-dom-context", "kibana", "manual"],
+    "redaction": { "applied": false }
+  }
+}

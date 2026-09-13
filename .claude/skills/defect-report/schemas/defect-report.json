@@ -1,0 +1,709 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentic-qe.dev/schemas/skills/defect-report/defect-report.json",
+  "title": "AQE Canonical Defect Report",
+  "description": "Single source of truth for a defect. Organised around a correlation ID so front-end, network and back-end evidence line up on one timeline. Renders to Markdown (human), Jira ADF, and a GitHub issue body without restating facts.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fingerprint",
+    "title",
+    "digest",
+    "classification",
+    "environment",
+    "reproduction",
+    "expected",
+    "actual",
+    "components",
+    "evidence",
+    "fault_localization",
+    "impact",
+    "provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "id": {
+      "type": "string",
+      "description": "Tracker key once filed (e.g. PROJ-1234). Absent until the report is filed.",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*-[0-9]+$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "description": "Deterministic dedupe hash. Derived ONLY from stable facts: primary component, error class, boundary endpoint+status, suspected layer. Excludes timestamps, trace IDs, user data and counts so the same defect always hashes identically.",
+      "pattern": "^[a-f0-9]{16}$"
+    },
+    "title": {
+      "type": "string",
+      "description": "[Component] fails [Condition] causing [Impact] - see bug-reporting-excellence for the formula.",
+      "minLength": 20,
+      "maxLength": 255
+    },
+    "digest": {
+      "type": "string",
+      "description": "Read-first summary. An agent triaging a queue should need only this field. State the layer verdict and the one fact that proves it.",
+      "minLength": 80,
+      "maxLength": 1200
+    },
+    "classification": {
+      "type": "object",
+      "required": ["severity", "defect_type", "reliability"],
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "Matches the bug-reporting-excellence rubric. critical=system down/data loss/security; high=major feature broken for many users; medium=partial break with workaround; low=cosmetic or rare edge case."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3", "P4"],
+          "description": "Scheduling decision, distinct from severity. A low-severity bug on a demo path can still be P1."
+        },
+        "defect_type": {
+          "type": "string",
+          "enum": [
+            "integration-contract",
+            "integration-timing",
+            "functional",
+            "regression",
+            "ui-rendering",
+            "state-management",
+            "performance",
+            "security",
+            "accessibility",
+            "data-integrity",
+            "configuration",
+            "build-deploy"
+          ],
+          "description": "integration-contract is the FE/BE payload-shape mismatch class; integration-timing covers race conditions, stale reads and out-of-order responses."
+        },
+        "reliability": {
+          "type": "string",
+          "enum": ["always", "intermittent", "once", "unknown"],
+          "description": "How consistently the reproduction steps produce the failure."
+        },
+        "reproduction_rate": {
+          "type": "string",
+          "description": "Observed rate when reliability is intermittent, e.g. '3/10 attempts'.",
+          "maxLength": 60
+        },
+        "regression_since": {
+          "type": "string",
+          "description": "Build, release or commit SHA where this last worked, when known.",
+          "maxLength": 120
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["tier", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["production", "staging", "qa", "dev", "local", "preview"]
+        },
+        "url": {
+          "type": "string",
+          "description": "Page or endpoint where the defect surfaces. Strip query-string credentials and session tokens before recording."
+        },
+        "app_version": { "type": "string", "maxLength": 60 },
+        "build_sha": { "type": "string", "maxLength": 60 },
+        "backend_version": { "type": "string", "maxLength": 60 },
+        "browser": {
+          "type": "string",
+          "description": "Name and version, e.g. 'Chrome 141.0.7390.54'.",
+          "maxLength": 120
+        },
+        "viewport": {
+          "type": "string",
+          "description": "WIDTHxHEIGHT in CSS pixels, e.g. '1440x900'.",
+          "pattern": "^[0-9]{2,5}x[0-9]{2,5}$"
+        },
+        "os": { "type": "string", "maxLength": 120 },
+        "device": { "type": "string", "maxLength": 120 },
+        "locale": { "type": "string", "maxLength": 35 },
+        "feature_flags": {
+          "type": "object",
+          "description": "Flag name to state. A flag skew between FE and BE is a leading cause of contract drift - record both sides when known.",
+          "additionalProperties": { "type": ["boolean", "string", "number"] }
+        },
+        "tenant": {
+          "type": "string",
+          "description": "Tenant or account identifier, if the defect is tenant-specific. Use an internal ID, never a customer name or email.",
+          "maxLength": 120
+        }
+      }
+    },
+    "reproduction": {
+      "type": "object",
+      "required": ["steps"],
+      "additionalProperties": false,
+      "properties": {
+        "preconditions": {
+          "type": "array",
+          "description": "State that must hold before step 1 (logged-in role, seeded data, flag state).",
+          "items": { "type": "string", "maxLength": 400 },
+          "maxItems": 20
+        },
+        "steps": {
+          "type": "array",
+          "description": "Human-readable ordered steps. One observable action each.",
+          "items": { "type": "string", "minLength": 3, "maxLength": 400 },
+          "minItems": 1,
+          "maxItems": 40
+        },
+        "executable": {
+          "type": "object",
+          "description": "Machine-replayable form of the same steps. Makes the report an executable artifact instead of a description of one.",
+          "required": ["engine", "steps"],
+          "additionalProperties": false,
+          "properties": {
+            "engine": {
+              "type": "string",
+              "enum": ["qe-browser", "playwright", "curl", "none"],
+              "description": "qe-browser steps are valid input to .claude/skills/qe-browser/scripts/batch.js --steps"
+            },
+            "steps": {
+              "type": "array",
+              "description": "For engine=qe-browser: batch.js step objects ({action, ...}). Replay with: jq -c '.reproduction.executable.steps' report.json | xargs -0 -I{} node .claude/skills/qe-browser/scripts/batch.js --steps {}",
+              "items": { "type": "object" },
+              "minItems": 1,
+              "maxItems": 60
+            },
+            "verified_replayable": {
+              "type": "boolean",
+              "description": "True only when these steps were actually executed and reproduced the failure. Never assert without running them."
+            }
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "string",
+      "description": "The behaviour the system is specified to produce, and where that specification lives if it is written down.",
+      "minLength": 15,
+      "maxLength": 2000
+    },
+    "actual": {
+      "type": "string",
+      "description": "What happens instead, with the verbatim error text. Quote errors exactly - paraphrased stack traces are not searchable.",
+      "minLength": 15,
+      "maxLength": 2000
+    },
+    "components": {
+      "type": "array",
+      "description": "Where in the DOM the defect manifests, resolved as far toward source code as the evidence allows. Ordered most-implicated first.",
+      "items": { "$ref": "#/$defs/component" },
+      "minItems": 1,
+      "maxItems": 25
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Every observed fact, each with a stable citable ID (EV-01, EV-02, ...) so prose elsewhere in the report and any downstream LLM can reference it without restating it.",
+      "items": { "$ref": "#/$defs/evidenceItem" },
+      "minItems": 1,
+      "maxItems": 200
+    },
+    "timeline": {
+      "type": "array",
+      "description": "Evidence IDs in observed chronological order across all layers. This is what makes a 200-OK-but-broken-UI defect legible: the interleaving is the diagnosis.",
+      "items": {
+        "type": "string",
+        "pattern": "^EV-[0-9]{2,3}$"
+      },
+      "maxItems": 200
+    },
+    "boundary": {
+      "type": "object",
+      "description": "The FE/BE integration point under suspicion. Required in practice for defect_type integration-contract or integration-timing.",
+      "additionalProperties": false,
+      "properties": {
+        "correlation_id": {
+          "type": "string",
+          "description": "Trace ID tying UI, network and backend evidence together (traceparent, x-request-id, or equivalent). The single most valuable field for cross-layer root causing.",
+          "maxLength": 200
+        },
+        "request": {
+          "type": "object",
+          "required": ["method", "url"],
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+            },
+            "url": { "type": "string", "maxLength": 2000 },
+            "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "duration_ms": { "type": "number", "minimum": 0 },
+            "request_headers": {
+              "type": "object",
+              "description": "Diagnostically relevant headers only (content-type, accept, api-version, traceparent). Authorization and Cookie MUST be dropped, not masked.",
+              "additionalProperties": { "type": "string" }
+            },
+            "response_headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "service": {
+              "type": "string",
+              "description": "Owning backend service, when resolvable from the route or gateway.",
+              "maxLength": 120
+            }
+          }
+        },
+        "contract_delta": {
+          "type": "object",
+          "description": "Payload-shape mismatch expressed as a path-level diff. This is the defect for most FE/BE integration bugs - a 200 response whose body does not match what the client parses.",
+          "additionalProperties": false,
+          "properties": {
+            "contract_source": {
+              "type": "string",
+              "description": "Where 'expected' comes from: an OpenAPI path, a TypeScript interface, a Pact contract, a GraphQL schema field.",
+              "maxLength": 400
+            },
+            "diffs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path", "kind"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "JSON pointer or dotted path into the payload, e.g. 'data.order.total'.",
+                    "maxLength": 400
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "missing_field",
+                      "unexpected_field",
+                      "type_mismatch",
+                      "null_where_required",
+                      "enum_violation",
+                      "format_violation",
+                      "range_violation",
+                      "array_shape",
+                      "encoding"
+                    ]
+                  },
+                  "expected": {
+                    "type": "string",
+                    "description": "Expected type or value per the contract source.",
+                    "maxLength": 400
+                  },
+                  "actual": {
+                    "type": "string",
+                    "description": "What the response actually carried. Redact values that are user data - the shape is what matters.",
+                    "maxLength": 400
+                  },
+                  "consumer_impact": {
+                    "type": "string",
+                    "description": "The concrete client-side consequence, e.g. 'OrderSummary.tsx:42 dereferences total, throws TypeError'.",
+                    "maxLength": 400
+                  }
+                }
+              },
+              "maxItems": 100
+            }
+          }
+        }
+      }
+    },
+    "fault_localization": {
+      "type": "object",
+      "description": "The layer verdict, stated as a hypothesis with its supporting evidence and the alternatives considered. An honest 'unknown' with ruled-out alternatives is more useful than a confident guess.",
+      "required": ["suspected_layer", "confidence", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "suspected_layer": {
+          "type": "string",
+          "enum": ["frontend", "backend", "contract", "network", "data", "config", "build", "third-party", "unknown"],
+          "description": "Use 'contract' when neither side is individually wrong but their agreement is - the FE parses what the BE never promised, or the promise changed unannounced."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this layer, citing evidence IDs. Must reference at least one EV- id.",
+          "minLength": 30,
+          "maxLength": 2000
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^EV-[0-9]{2,3}$" },
+          "maxItems": 50
+        },
+        "alternatives": {
+          "type": "array",
+          "description": "Layers considered and why they were ranked lower. Stops the assignee re-treading ground.",
+          "items": {
+            "type": "object",
+            "required": ["layer", "why_less_likely"],
+            "additionalProperties": false,
+            "properties": {
+              "layer": {
+                "type": "string",
+                "enum": ["frontend", "backend", "contract", "network", "data", "config", "build", "third-party", "unknown"]
+              },
+              "why_less_likely": { "type": "string", "maxLength": 600 },
+              "ruled_out_by": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^EV-[0-9]{2,3}$" },
+                "maxItems": 20
+              }
+            }
+          },
+          "maxItems": 10
+        },
+        "open_questions": {
+          "type": "array",
+          "description": "What could not be determined from available evidence, and what would settle it.",
+          "items": { "type": "string", "maxLength": 400 },
+          "maxItems": 20
+        }
+      }
+    },
+    "impact": {
+      "type": "object",
+      "required": ["description"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Who is affected and what they cannot do. Concrete user consequence, not severity restated.",
+          "minLength": 20,
+          "maxLength": 1200
+        },
+        "users_affected": {
+          "type": "string",
+          "description": "Scope estimate with its basis, e.g. 'all checkout users on Chrome (~40% of traffic, per analytics)'.",
+          "maxLength": 400
+        },
+        "business_impact": { "type": "string", "maxLength": 600 },
+        "workaround": {
+          "type": "string",
+          "description": "A workaround that exists, or an explicit statement that none was found.",
+          "maxLength": 600
+        },
+        "first_observed": { "type": "string" },
+        "occurrences": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "triage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "suggested_team": { "type": "string", "maxLength": 120 },
+        "suggested_assignee": {
+          "type": "string",
+          "description": "Derived from git history on the implicated source file. A hint for the triager, never an auto-assignment.",
+          "maxLength": 200
+        },
+        "assignee_basis": {
+          "type": "string",
+          "description": "How the suggestion was derived, so a wrong guess is auditable.",
+          "maxLength": 400
+        },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 60 },
+          "maxItems": 25
+        },
+        "duplicate_of": {
+          "type": "string",
+          "description": "Existing tracker key when fingerprint matching found this defect already filed.",
+          "maxLength": 60
+        },
+        "related_issues": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 60 },
+          "maxItems": 25
+        },
+        "linked_tests": {
+          "type": "array",
+          "description": "Test files that should have caught this. A defect with no candidate test is a coverage gap worth naming.",
+          "items": { "type": "string", "maxLength": 400 },
+          "maxItems": 25
+        }
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["screenshot", "video", "har", "console-log", "server-log", "trace", "dom-snapshot", "payload", "other"]
+          },
+          "path": {
+            "type": "string",
+            "description": "Local path or tracker attachment URL.",
+            "maxLength": 1000
+          },
+          "description": { "type": "string", "maxLength": 400 },
+          "redacted": {
+            "type": "boolean",
+            "description": "Whether the redaction gate has processed this file. HAR files and server logs MUST be redacted before filing to an external tracker."
+          }
+        }
+      },
+      "maxItems": 50
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["generated_by", "generated_at", "redaction"],
+      "additionalProperties": false,
+      "properties": {
+        "generated_by": {
+          "type": "string",
+          "description": "Skill and version that produced this report, e.g. 'defect-report@1.0.0'.",
+          "maxLength": 120
+        },
+        "generated_at": { "type": "string" },
+        "reporter": {
+          "type": "string",
+          "description": "Human or agent that observed the defect.",
+          "maxLength": 200
+        },
+        "evidence_sources": {
+          "type": "array",
+          "description": "Tools that contributed evidence, e.g. 'qe-browser/capture-dom-context', 'manual'.",
+          "items": { "type": "string", "maxLength": 200 },
+          "maxItems": 25
+        },
+        "redaction": {
+          "type": "object",
+          "required": ["applied"],
+          "additionalProperties": false,
+          "properties": {
+            "applied": {
+              "type": "boolean",
+              "description": "False blocks filing to any external tracker."
+            },
+            "findings_removed": { "type": "integer", "minimum": 0 },
+            "categories": {
+              "type": "array",
+              "items": { "type": "string", "maxLength": 60 },
+              "maxItems": 25
+            }
+          }
+        },
+        "filed": {
+          "type": "object",
+          "description": "Populated only after a successful file operation.",
+          "additionalProperties": false,
+          "properties": {
+            "tracker": {
+              "type": "string",
+              "enum": ["jira", "github", "azure-devops", "linear", "file"]
+            },
+            "key": { "type": "string", "maxLength": 120 },
+            "url": { "type": "string", "maxLength": 1000 },
+            "filed_at": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "description": "One implicated UI component, resolved from DOM node toward owning source file.",
+      "required": ["id", "selector"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable citable id, C-01, C-02, ...",
+          "pattern": "^C-[0-9]{2,3}$"
+        },
+        "role_in_defect": {
+          "type": "string",
+          "enum": ["failing", "trigger", "container", "sibling-affected", "data-source"],
+          "description": "failing = where the error surfaces; trigger = what the user interacted with. These are often different components, and saying which is which saves the assignee a hop."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector locating the node. Prefer a data-testid-anchored selector over a positional one - positional selectors rot.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "dom_path": {
+          "type": "array",
+          "description": "Ancestor chain from document root to the node, outermost first.",
+          "items": {
+            "type": "object",
+            "required": ["tag"],
+            "additionalProperties": false,
+            "properties": {
+              "tag": { "type": "string", "maxLength": 60 },
+              "id": { "type": "string", "maxLength": 200 },
+              "classes": {
+                "type": "array",
+                "items": { "type": "string", "maxLength": 120 },
+                "maxItems": 30
+              },
+              "role": { "type": "string", "maxLength": 60 },
+              "testid": { "type": "string", "maxLength": 200 },
+              "component": {
+                "type": "string",
+                "description": "Framework component name at this level, when detectable.",
+                "maxLength": 200
+              }
+            }
+          },
+          "maxItems": 40
+        },
+        "framework_component": {
+          "type": "string",
+          "description": "Component name or nesting path, e.g. 'CheckoutPage > OrderSummary'. Detected from framework devtools attributes, data-component, or data-testid.",
+          "maxLength": 400
+        },
+        "framework": {
+          "type": "string",
+          "enum": ["react", "vue", "angular", "svelte", "web-components", "jquery", "unknown"]
+        },
+        "detection_method": {
+          "type": "string",
+          "enum": ["devtools-attribute", "data-component", "data-testid", "aria-label", "heading-text", "manual", "inferred"],
+          "description": "How framework_component was determined. 'inferred' signals a guess the reader should verify."
+        },
+        "testid": { "type": "string", "maxLength": 200 },
+        "aria": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "role": { "type": "string", "maxLength": 60 },
+            "label": { "type": "string", "maxLength": 400 },
+            "described_by": { "type": "string", "maxLength": 400 }
+          }
+        },
+        "text_content": {
+          "type": "string",
+          "description": "Visible text, truncated. Helps a human find the element on screen.",
+          "maxLength": 400
+        },
+        "bounding_box": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        },
+        "state_snapshot": {
+          "type": "object",
+          "description": "Observable element state at failure time: disabled, aria-invalid, value, visibility, class flags.",
+          "additionalProperties": { "type": ["string", "boolean", "number", "null"] }
+        },
+        "source_file": {
+          "type": "string",
+          "description": "Repo-relative path, optionally with :line. Closes the loop from DOM node to the code that owns it.",
+          "maxLength": 600
+        },
+        "source_basis": {
+          "type": "string",
+          "description": "How source_file was resolved (grep for testid, component name match, stack frame). Distinguishes proof from guess.",
+          "maxLength": 400
+        },
+        "owner": {
+          "type": "string",
+          "description": "Most frequent recent author of source_file, from git history.",
+          "maxLength": 200
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "required": ["id", "layer", "kind", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^EV-[0-9]{2,3}$"
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["ui", "network", "backend", "data", "build", "config"],
+          "description": "Which tier of the stack produced this observation. The distribution across layers is itself a signal."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "console-error",
+            "console-warning",
+            "js-exception",
+            "dom-state",
+            "visual",
+            "http-request",
+            "http-response",
+            "failed-request",
+            "websocket",
+            "server-log",
+            "stack-trace",
+            "db-state",
+            "metric",
+            "trace-span",
+            "user-observation",
+            "test-failure",
+            "build-log"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "description": "One line stating the observation. Factual, not interpretive - interpretation belongs in fault_localization.",
+          "minLength": 5,
+          "maxLength": 600
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO-8601 absolute time. Required for anything that participates in the timeline."
+        },
+        "offset_ms": {
+          "type": "number",
+          "description": "Milliseconds from the first evidence item. Cheaper to read than absolute timestamps when correlating layers.",
+          "minimum": 0
+        },
+        "correlation_id": {
+          "type": "string",
+          "description": "Trace ID linking this item across layers. Matching values on a ui item and a backend item are what turn two observations into one finding.",
+          "maxLength": 200
+        },
+        "component_ref": {
+          "type": "string",
+          "description": "Component id (C-01) this observation attaches to.",
+          "pattern": "^C-[0-9]{2,3}$"
+        },
+        "detail": {
+          "type": "string",
+          "description": "Verbatim payload: error text, stack trace, log line, response body excerpt. Redacted before filing.",
+          "maxLength": 20000
+        },
+        "source": {
+          "type": "string",
+          "description": "Where this came from: 'browser-console', 'har', 'kibana', 'manual', 'capture-dom-context'.",
+          "maxLength": 200
+        },
+        "attachment_ref": {
+          "type": "string",
+          "description": "Path of the attachment carrying the full artifact.",
+          "maxLength": 1000
+        },
+        "redacted": { "type": "boolean" }
+      }
+    }
+  }
+}

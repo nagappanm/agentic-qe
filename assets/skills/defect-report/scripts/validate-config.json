@@ -1,0 +1,50 @@
+{
+  "skillName": "defect-report",
+  "skillVersion": "1.0.0",
+  "requiredTools": [
+    "node"
+  ],
+  "optionalTools": [
+    "jq",
+    "git",
+    "grep",
+    "vibium"
+  ],
+  "schemaPath": "schemas/output.json",
+  "requiredFields": [
+    "skillName",
+    "status",
+    "trustTier",
+    "output",
+    "output.operation",
+    "output.summary"
+  ],
+  "requiredNonEmptyFields": [
+    "output.summary"
+  ],
+  "mustContainTerms": [
+    "defect",
+    "report"
+  ],
+  "mustNotContainTerms": [
+    "TODO",
+    "FIXME",
+    "placeholder",
+    "lorem ipsum"
+  ],
+  "enumValidations": {
+    ".status": [
+      "success",
+      "partial",
+      "failed",
+      "skipped"
+    ],
+    ".output.operation": [
+      "capture",
+      "build",
+      "render",
+      "redact",
+      "file"
+    ]
+  }
+}

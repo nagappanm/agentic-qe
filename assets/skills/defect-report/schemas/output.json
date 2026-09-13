@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentic-qe.dev/schemas/skills/defect-report/output.json",
+  "title": "Defect Report Skill Output Schema",
+  "description": "AQE Tier-3 envelope for the defect-report skill. Wraps a canonical defect report (schemas/defect-report.json) plus the operation metadata a caller needs to decide what happens next.",
+  "type": "object",
+  "required": ["skillName", "version", "timestamp", "status", "trustTier", "output"],
+  "properties": {
+    "skillName": { "type": "string", "const": "defect-report" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9]+)?$" },
+    "timestamp": { "type": "string" },
+    "status": { "type": "string", "enum": ["success", "partial", "failed", "skipped"] },
+    "trustTier": { "type": "integer", "const": 3 },
+    "vibiumUnavailable": {
+      "type": "boolean",
+      "description": "Canonical downstream signal, matching the qe-browser contract: the browser engine is absent, so DOM evidence could not be captured. Not a defect-report failure - the caller should fall back to manual evidence entry."
+    },
+    "output": {
+      "type": "object",
+      "required": ["operation", "summary"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": ["capture", "build", "render", "redact", "file"],
+          "description": "Which phase of the skill produced this envelope."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 2000,
+          "description": "Human-readable outcome of the operation."
+        },
+        "report": {
+          "$ref": "defect-report.json",
+          "description": "The canonical defect report. Present for build, and for file once the tracker key is known."
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{16}$",
+          "description": "Dedupe hash - search the tracker for this before filing."
+        },
+        "capture": {
+          "type": "object",
+          "description": "Result of capture, before it is folded into a report.",
+          "properties": {
+            "url": { "type": "string" },
+            "components": { "type": "array", "items": { "type": "object" } },
+            "evidence": { "type": "array", "items": { "type": "object" } },
+            "attachments": { "type": "array", "items": { "type": "object" } },
+            "framework": { "type": "string" }
+          }
+        },
+        "rendered": {
+          "type": "object",
+          "description": "Result of render.",
+          "properties": {
+            "format": { "type": "string", "enum": ["markdown", "jira-adf", "github-body"] },
+            "content": { "type": "string" },
+            "characters": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "redaction": {
+          "type": "object",
+          "description": "Result of the redaction gate. blocked=true means the report MUST NOT be filed to an external tracker until the findings are resolved or explicitly acknowledged.",
+          "properties": {
+            "blocked": { "type": "boolean" },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["category", "path"],
+                "properties": {
+                  "category": { "type": "string" },
+                  "path": { "type": "string", "description": "Location within the report, e.g. 'evidence[2].detail'." },
+                  "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+                  "action": { "type": "string", "enum": ["removed", "masked", "flagged"] }
+                }
+              }
+            },
+            "findingsRemoved": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "filing": {
+          "type": "object",
+          "description": "Result of file. dryRun=true is the default and means nothing left this machine.",
+          "properties": {
+            "tracker": { "type": "string", "enum": ["jira", "github", "azure-devops", "linear", "file"] },
+            "dryRun": { "type": "boolean" },
+            "path": { "type": "string", "description": "Local path written in dry-run mode." },
+            "key": { "type": "string" },
+            "url": { "type": "string" },
+            "duplicateOf": { "type": "string", "description": "Existing tracker key matched by fingerprint - file a comment, not a new issue." }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Non-fatal gaps: missing correlation ID, unresolved source file, evidence with no timestamp."
+        },
+        "remediation": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Concrete next actions when status is not success."
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "executionTimeMs": { "type": "number", "minimum": 0 },
+        "schemaVersion": { "type": "string" },
+        "evidenceCount": { "type": "integer", "minimum": 0 },
+        "componentCount": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
