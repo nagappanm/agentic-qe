@@ -1,7 +1,7 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "generated": "2026-04-09T00:00:00.000Z",
-  "totalSkills": 50,
+  "totalSkills": 51,
   "totalQESkills": 82,
   "description": "Agentic QE Fleet skills manifest - 50 Tier 3 verified QE skills. Total 82 QE skills on disk (50 Tier 3 + 32 additional including QCSD swarms, n8n testing, enterprise integration, pentest validation, qe-* domains, qe-browser via ADR-091, qe-court adversarial review via ADR-124).",
   "categories": {
@@ -93,9 +93,9 @@
       ]
     },
     "bug-management": {
-      "description": "Bug reporting and defect management",
-      "priority": "medium",
-      "skills": ["bug-reporting-excellence"]
+      "description": "Bug reporting, structured defect artifacts, and defect management",
+      "priority": "high",
+      "skills": ["bug-reporting-excellence", "defect-report"]
     }
   },
   "skills": {
@@ -869,6 +869,19 @@
       "tags": ["bug-reporting", "communication", "quality"],
       "dependencies": [],
       "agents": ["qe-test-executor", "qe-flaky-test-hunter"]
+    },
+    "defect-report": {
+      "id": "defect-report",
+      "name": "Defect Report",
+      "description": "File defects to Jira, GitHub or a local file as a structured, schema-validated report an LLM can root-cause from and a human can read, with DOM component attribution and cross-layer evidence correlation.",
+      "category": "bug-management",
+      "priority": "high",
+      "file": "defect-report/SKILL.md",
+      "tokenEstimate": 1400,
+      "tags": ["defects", "bugs", "reporting", "jira", "github", "integration", "dom", "root-cause", "triage"],
+      "dependencies": ["qe-browser", "bug-reporting-excellence"],
+      "agents": ["qe-root-cause-analyzer", "qe-integration-tester", "qe-defect-predictor", "qe-browser"],
+      "trustTier": 3
     }
   },
   "preloadRules": {

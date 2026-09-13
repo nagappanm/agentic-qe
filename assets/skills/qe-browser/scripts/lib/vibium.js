@@ -8,7 +8,7 @@
 
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const engine = require('./engine');
 
 const SKILL_NAME = 'qe-browser';
 const SKILL_VERSION = '1.0.0';
@@ -30,36 +30,31 @@ class VibiumUnavailableError extends Error {
   }
 }
 
-// Inject `--headless` into every vibium call by default. The qe-browser
-// helper scripts are designed for QE / CI use cases where there's no
-// display server, and Vibium defaults to "visible by default" which fails
-// in headless containers with "Missing X server or $DISPLAY". Users who
-// want a visible browser for interactive debugging should call vibium
-// directly, not through these helpers.
-//
-// Opt out by setting QE_BROWSER_HEADED=1 in the environment.
-function injectHeadless(args) {
-  if (process.env.QE_BROWSER_HEADED === '1') return args;
-  if (args.includes('--headless') || args.includes('--headed')) return args;
-  return ['--headless', ...args];
-}
+// The headless default (and its QE_BROWSER_HEADED=1 opt-out) now lives in each
+// backend, since Vibium takes it as a CLI flag while Playwright takes it as a
+// launch option. See lib/engines/vibium.js and lib/engines/playwright.js.
 
-function vibium(args, { input, timeoutMs = 30000 } = {}) {
-  const finalArgs = injectHeadless(args);
-  const result = spawnSync('vibium', finalArgs, {
-    encoding: 'utf8',
-    input,
-    timeout: timeoutMs,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+/**
+ * Run one engine command.
+ *
+ * Delegates to the backend selected by QE_BROWSER_ENGINE (default: vibium, so
+ * behaviour is unchanged for every existing caller). Both backends speak the
+ * same argv vocabulary and return the same { status, stdout, stderr } shape,
+ * which is why the five QE primitives above needed no changes.
+ *
+ * The headless default now lives in the vibium backend; the Playwright backend
+ * applies the same QE_BROWSER_HEADED=1 opt-out at launch time.
+ */
+function vibium(args, opts = {}) {
+  const result = engine.run(args, opts);
 
   // F1: throw a TYPED error so the per-script main() can catch instanceof
   // VibiumUnavailableError and emit the documented "skipped" envelope
   // instead of a generic "failed" with the reason buried in `actual`.
-  if (result.error && result.error.code === 'ENOENT') {
-    throw new VibiumUnavailableError(
-      'vibium binary not found on PATH. Install via `npm install -g vibium` or run `aqe init`.'
-    );
+  // Either engine being unusable is the same situation for a caller: no
+  // browser, degrade rather than report a test failure.
+  if (result && result.unavailable) {
+    throw new VibiumUnavailableError(result.message);
   }
 
   return {

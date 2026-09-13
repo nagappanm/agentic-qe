@@ -1,0 +1,7 @@
+{
+  "name": "@aqe/defect-report-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Scoped package.json that keeps defect-report helper scripts in CommonJS despite the repo root being ESM."
+}
