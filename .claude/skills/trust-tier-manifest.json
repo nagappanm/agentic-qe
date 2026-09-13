@@ -5,17 +5,17 @@
   "generator": "scripts/update-skill-manifest.ts",
   "trustTierPolicy": "ADR-056",
   "summary": {
-    "tier0": 51,
+    "tier0": 52,
     "tier1": 5,
     "tier2": 7,
     "tier3": 50,
-    "total": 113
+    "total": 114
   },
   "validationStatus": {
     "passing": 50,
     "failing": 0,
     "unknown": 12,
-    "skipped": 51
+    "skipped": 52
   },
   "skillsByTier": {
     "tier3": [
@@ -726,6 +726,11 @@
         "name": "exploratory-testing-advanced",
         "category": "testing-methodologies",
         "file": "exploratory-testing-advanced/SKILL.md"
+      },
+      {
+        "name": "feature-deep-dive",
+        "category": "investigation",
+        "file": "feature-deep-dive/SKILL.md"
       },
       {
         "name": "flow-nexus-neural",
@@ -2097,6 +2102,14 @@
         "session-based"
       ],
       "lastUpdated": "2025-12-02"
+    },
+    "feature-deep-dive": {
+      "trustTier": 0,
+      "category": "investigation",
+      "validation": {
+        "status": "skipped"
+      },
+      "file": "feature-deep-dive/SKILL.md"
     },
     "flow-nexus-neural": {
       "trustTier": 0,
