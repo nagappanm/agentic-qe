@@ -104,12 +104,12 @@ ERROR:ui/ozone/platform/x11/ozone_platform_x11.cc:256] Missing X server or $DISP
 The platform failed to initialize.  Exiting.
 ```
 
-The qe-browser helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) automatically inject `--headless` for you. If you call `vibium` directly, pass it yourself:
+The qe-browser helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) inject `--headless` for you when they detect CI or a Linux host with no display, and run headed everywhere else. If you call `vibium` directly in a container, pass it yourself:
 ```bash
 vibium --headless go https://example.com
 ```
 
-Opt out for interactive debugging via `QE_BROWSER_HEADED=1`.
+Force either mode with `QE_BROWSER_HEADLESS=1` or `QE_BROWSER_HEADED=1` (see *Headed vs headless* in SKILL.md).
 
 ### 2. `vibium screenshot -o <abs/path>` ignores the directory
 

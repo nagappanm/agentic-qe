@@ -67,13 +67,26 @@ vibium --headless title  # → "Herman Melville - Moby-Dick"
 
 This workaround is verified working on Debian bookworm aarch64 with chromium 146.0.7680.177-1~deb12u1. Track upstream — when Vibium adds a `--browser-path` flag or Google ships `linux-arm64` Chrome for Testing, this section becomes obsolete.
 
-## Headless mode
+## Headed vs headless
 
-Helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) run headless by default on either engine because the qe-browser skill is designed for QE/CI use cases where there's no display server. **Vibium itself defaults to "visible by default"** — running `vibium go` on a headless container without `--headless` fails with `Missing X server or $DISPLAY`.
+Helper scripts (`assert.js`, `batch.js`, `visual-diff.js`, `check-injection.js`, `intent-score.js`) run **headed wherever a display is available**, on either engine, so you can watch the browser do what the test claims. They switch to headless automatically only where a window cannot open — forcing headed there fails outright with `Missing X server or $DISPLAY`.
 
-Opt out for interactive debugging:
+| Situation | Mode |
+|---|---|
+| `QE_BROWSER_HEADLESS=1` | headless (forced) |
+| `QE_BROWSER_HEADED=1` | headed (forced — e.g. to debug a CI failure locally) |
+| CI detected (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TF_BUILD`) | headless |
+| Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY` (containers, codespaces) | headless |
+| Anything else — macOS, Windows, a Linux desktop | **headed** |
+
+First match wins. The decision lives in one place, `resolveHeadless()` in `lib/engine.js`, which both backends call. An explicit `--headless` or `--headed` in the argv always wins over it — the smoke test and eval suite pass `--headless` themselves for that reason.
+
 ```bash
-QE_BROWSER_HEADED=1 node .claude/skills/qe-browser/scripts/assert.js --checks '...'
+# watch it run (the default on your own machine)
+node .claude/skills/qe-browser/scripts/assert.js --checks '...'
+
+# keep it out of the way while you work
+QE_BROWSER_HEADLESS=1 node .claude/skills/qe-browser/scripts/assert.js --checks '...'
 ```
 
 When you call `vibium` directly (not through a helper), pass `--headless` yourself if you're in a container:
@@ -99,7 +112,7 @@ Both engines speak the same argv vocabulary behind `lib/engine.js`, so all five 
 | Variable | Effect |
 |---|---|
 | `QE_BROWSER_ENGINE` | `vibium` (default) or `playwright`. An unrecognised value falls back to `vibium`. |
-| `QE_BROWSER_HEADED=1` | Run headed, on either engine. |
+| `QE_BROWSER_HEADLESS=1` / `QE_BROWSER_HEADED=1` | Force headless / headed, on either engine. Without either, see *Headed vs headless* above. |
 | `QE_BROWSER_EXECUTABLE_PATH` | Playwright only: use a specific Chrome/Chromium binary instead of the bundled one. |
 | `QE_BROWSER_NO_SANDBOX=1` | Playwright only: add `--no-sandbox`. Needed when running as root; prefer a non-root user, since the sandbox is a security boundary. |
 | `QE_BROWSER_SESSION_DIR` | Playwright only: where the browser session and profile live (default `~/.cache/qe-browser`). |
@@ -412,7 +425,7 @@ Emitted when vibium is not installed on PATH. Top-level `vibiumUnavailable: true
     "remediation": [
       "Install vibium globally: `npm install -g vibium`",
       "Or re-run `aqe init` to install via the AQE bootstrap",
-      "Set QE_BROWSER_HEADED=1 only for interactive debugging (not the cause here)"
+      "QE_BROWSER_HEADLESS / QE_BROWSER_HEADED only change window visibility (not the cause here)"
     ]
   },
   "metadata": { "executionTimeMs": 0 }

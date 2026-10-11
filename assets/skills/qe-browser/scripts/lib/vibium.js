@@ -30,9 +30,10 @@ class VibiumUnavailableError extends Error {
   }
 }
 
-// The headless default (and its QE_BROWSER_HEADED=1 opt-out) now lives in each
-// backend, since Vibium takes it as a CLI flag while Playwright takes it as a
-// launch option. See lib/engines/vibium.js and lib/engines/playwright.js.
+// Headed vs headless is decided once, by resolveHeadless() in lib/engine.js
+// (headed wherever a display exists, headless in CI and display-less Linux),
+// and applied by each backend — Vibium as a CLI flag, Playwright as a launch
+// option. See lib/engines/vibium.js and lib/engines/playwright.js.
 
 /**
  * Run one engine command.
@@ -42,8 +43,8 @@ class VibiumUnavailableError extends Error {
  * same argv vocabulary and return the same { status, stdout, stderr } shape,
  * which is why the five QE primitives above needed no changes.
  *
- * The headless default now lives in the vibium backend; the Playwright backend
- * applies the same QE_BROWSER_HEADED=1 opt-out at launch time.
+ * Window visibility is not decided here: both backends apply
+ * resolveHeadless() from lib/engine.js.
  */
 function vibium(args, opts = {}) {
   const result = engine.run(args, opts);
@@ -175,7 +176,7 @@ function unavailableEnvelope(operation, message) {
       remediation: [
         'Install vibium globally: `npm install -g vibium`',
         'Or re-run `aqe init` to install via the AQE bootstrap',
-        'Set QE_BROWSER_HEADED=1 only for interactive debugging (not the cause here)',
+        'QE_BROWSER_HEADLESS / QE_BROWSER_HEADED only change window visibility (not the cause here)',
       ],
     },
     metadata: { executionTimeMs: 0 },

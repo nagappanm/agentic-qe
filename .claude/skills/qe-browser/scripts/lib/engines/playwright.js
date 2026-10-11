@@ -117,7 +117,7 @@ async function launch(pw) {
     '--no-default-browser-check',
     '--disable-gpu',
   ];
-  if (process.env.QE_BROWSER_HEADED !== '1') args.push('--headless=new');
+  if (require('../engine').resolveHeadless().headless) args.push('--headless=new');
   if (process.env.QE_BROWSER_NO_SANDBOX === '1') args.push('--no-sandbox');
 
   let child;

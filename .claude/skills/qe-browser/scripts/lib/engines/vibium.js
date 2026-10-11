@@ -13,15 +13,16 @@ const { spawnSync } = require('node:child_process');
 const ENGINE_ID = 'vibium';
 
 /**
- * Inject `--headless` by default. The qe-browser helpers target QE/CI use
- * where there is no display server, and Vibium is visible-by-default, which
- * fails in containers with "Missing X server or $DISPLAY".
- * Opt out with QE_BROWSER_HEADED=1.
+ * Add `--headless` only when resolveHeadless() says no window can open (CI,
+ * containers, Linux without a display). Elsewhere the browser runs headed,
+ * Vibium's own default. An explicit `--headless`/`--headed` from the caller
+ * always wins — the smoke test and eval suite pass `--headless` themselves.
  */
 function injectHeadless(args) {
-  if (process.env.QE_BROWSER_HEADED === '1') return args;
   if (args.includes('--headless') || args.includes('--headed')) return args;
-  return ['--headless', ...args];
+  // Required lazily: engine.js requires this module from backend().
+  const { resolveHeadless } = require('../engine');
+  return resolveHeadless().headless ? ['--headless', ...args] : args;
 }
 
 function isUnavailable(result) {
