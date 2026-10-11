@@ -200,6 +200,33 @@ function findDuplicates(list) {
 // Assembly
 // ---------------------------------------------------------------------------
 
+/**
+ * Give a capture's items ids no draft can be using, before merging.
+ *
+ * A capture numbers from EV-01 and C-01, exactly like a hand-written draft, and
+ * normalizeIds() remaps references by id string. Merged as-is, the remap meant
+ * for the capture's EV-01 also rewrote the draft's own EV-01 citations — the
+ * rationale silently ended up citing the capture's item instead, and still
+ * passed validation because that id exists.
+ *
+ * After normalizeIds, capture items are numbered straight after the draft's:
+ * with four draft evidence items, the capture's first becomes EV-05.
+ */
+function rekeyCapture(cap) {
+  const cMap = {};
+  const components = (cap.components || []).map((c, i) => {
+    const id = `C-${900 + i}`;
+    cMap[c.id] = id;
+    return { ...c, id };
+  });
+  const evidence = (cap.evidence || []).map((e, i) => ({
+    ...e,
+    id: `EV-${900 + i}`,
+    ...(e.component_ref ? { component_ref: cMap[e.component_ref] || e.component_ref } : {}),
+  }));
+  return { ...cap, components, evidence };
+}
+
 /** Renumber ids sequentially and rewrite every reference to match. */
 function normalizeIds(report) {
   const evMap = {};
@@ -258,10 +285,12 @@ function main() {
   if (args.capture) {
     if (!fs.existsSync(args.capture)) lib.fail(OP, `Capture file not found: ${args.capture}`);
     const capDoc = lib.readJson(args.capture);
-    const cap = capDoc.output?.capture || capDoc;
-    report.components = [...(report.components || []), ...(cap.components || [])];
-    report.evidence = [...(report.evidence || []), ...(cap.evidence || [])];
+    const cap = rekeyCapture(capDoc.output?.capture || capDoc);
+    report.components = [...(report.components || []), ...cap.components];
+    report.evidence = [...(report.evidence || []), ...cap.evidence];
     report.attachments = [...(report.attachments || []), ...(cap.attachments || [])];
+    // Keep an explicit draft timeline complete; the order check still applies.
+    if ((report.timeline || []).length) report.timeline = [...report.timeline, ...cap.evidence.map((e) => e.id)];
   }
 
   // Derived fields — always recomputed, never trusted from input.

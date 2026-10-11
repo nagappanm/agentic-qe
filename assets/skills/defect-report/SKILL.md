@@ -105,6 +105,8 @@ node .claude/skills/defect-report/scripts/build-report.js \
 
 Assigns stable ids (`C-01`, `EV-01`), computes `offset_ms` from timestamps, derives the dedupe `fingerprint`, and validates against `schemas/defect-report.json`.
 
+**Merged ids.** With `--capture`, the capture's components and evidence are numbered *after* the draft's: four draft evidence items and the capture's first becomes `EV-05`; no draft components and the capture's become `C-01`, `C-02`. Cite them by those numbers. The draft's own ids are never renumbered onto capture items.
+
 **Errors block.** Beyond schema conformance, the validator enforces referential integrity, because a report citing `EV-07` that does not exist is unusable to an agent even when every field is individually valid:
 
 - dangling `evidence_refs`, `ruled_out_by`, `timeline` entries, or `component_ref`
