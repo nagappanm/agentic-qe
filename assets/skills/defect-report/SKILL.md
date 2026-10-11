@@ -63,12 +63,20 @@ Resolves the failing element four levels deep, each level more useful than the l
 
 | Level | Example | Source |
 |---|---|---|
-| `selector` | `[data-testid="order-summary"] .summary-total` | `vibium map` |
+| `selector` | `[data-testid="order-summary"] .summary-total` | nearest test-id ancestor + the element |
 | `dom_path` | `main#checkout-root › section › aside[data-testid=order-summary] › div` | ancestor walk |
-| `framework_component` | `CheckoutPage > OrderSummary` | devtools attrs → `data-component` → `data-testid` → `aria-label` |
+| `framework_component` | `CheckoutPage > OrderSummary` | React fiber (16 and 17+) → `data-component` → `data-testid` → `aria-label` |
 | `source_file` + `owner` | `src/checkout/OrderSummary.tsx:42`, last author | repo grep + `git log` |
 
 That last row closes DOM → source file → who fixes it, which is what actually shortens time-to-fix. Every component records `detection_method` and `source_basis`, so a reader can tell a devtools-sourced fact from a grep-based guess. `detection_method: "inferred"` means verify it.
+
+Source lookup greps the *current checkout*, so it only runs when the page is local (`localhost`, `127.0.0.1`, `file:`, `*.local`) or you pass `--repo-root <app repo>`. Against anyone else's site it would attribute `TodoItem` to whatever unrelated file in your checkout mentions the word.
+
+The capture also records **why** the element looks the way it does: its computed visibility, whether it is in the tab order, and the stylesheet rules that govern `display`/`visibility`/`opacity`/`pointer-events` — including state-conditional ones such as `:hover`. For "it exists but nobody can see or reach it" defects, that rule *is* the root cause.
+
+All page facts come through `eval` (`scripts/page-probe.js`), not engine-specific commands. Those drift: Vibium v26.8 returns `map` as text lines, renamed `source`, and has no `console` or `network` at all — which once left capture returning zero components and zero evidence.
+
+**When the engine cannot see something, the capture says so.** On an engine without console telemetry you get *"Console messages were NOT captured … this does not mean no errors occurred"*, never an empty list that reads as a clean page. Network falls back to the browser's Resource Timing API (URLs, status, timing — no methods or headers, so no correlation ID). Status is `success` only when the named element was found and console and network were both observable; anything less is `partial`. Use `QE_BROWSER_ENGINE=playwright` when you need console errors.
 
 Pass `--selector` or `--testid`. Without either, attribution degrades to page-level and the report says so.
 

@@ -3,10 +3,12 @@
 /**
  * capture-dom-context.js — turn a live failing page into defect-report evidence.
  *
- * Browser driving is qe-browser's job; this script only shells out to `vibium`
- * and shapes the result into `components[]` + `evidence[]` per
- * schemas/defect-report.json. It honours the qe-browser environment contract:
- * no vibium on PATH => status "skipped", vibiumUnavailable:true, exit 2.
+ * Browser driving is qe-browser's job; this script goes through its engine layer
+ * and shapes what comes back into `components[]` + `evidence[]` per
+ * schemas/defect-report.json. Page facts are gathered by page-probe.js through
+ * `eval`, so they do not depend on engine-specific commands whose output drifts
+ * between releases. It honours the qe-browser environment contract: no usable
+ * engine => status "skipped", vibiumUnavailable:true, exit 2.
  *
  * Usage:
  *   node capture-dom-context.js --url <url> [--selector <css>] [--testid <id>]
@@ -17,10 +19,17 @@
  * flags that the failing element is unidentified.
  */
 
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const lib = require('./lib.js');
+const probe = require('./page-probe.js');
+const {
+  resolveComponentName,
+  shouldResolveSource,
+  targetComponent,
+  containerComponent,
+  stateEvidence,
+} = require('./component-attribution.js');
 
 const OP = 'capture';
 
@@ -60,8 +69,8 @@ function engineAvailable() {
  * single JSON envelope this script writes to stdout stays parseable even when
  * a caller redirects 2>&1.
  */
-function vibium(args, { allowFail = false } = {}) {
-  const res = engine.run(args, { timeoutMs: 60000 });
+function vibium(args, { allowFail = false, input } = {}) {
+  const res = engine.run(args, { timeoutMs: 60000, input });
   if (res && res.unavailable) {
     const err = new Error(res.message);
     err.engineUnavailable = true;
@@ -104,112 +113,6 @@ function vibiumJson(args, { allowFail = false } = {}) {
     return null;
   }
 }
-
-/**
- * Detect the UI framework from page markers. Ordered most-specific first —
- * ng-version and data-reactroot are explicit, __vue__ is a runtime property,
- * so a page that somehow carries two markers is attributed to the explicit one.
- */
-function detectFramework(html) {
-  if (/ng-version=|_nghost-|ng-reflect-/.test(html)) return 'angular';
-  if (/data-reactroot|__reactFiber\$|__reactProps\$|data-reactid/.test(html)) return 'react';
-  if (/data-v-[0-9a-f]{8}|__vue__|v-cloak/.test(html)) return 'vue';
-  if (/svelte-[0-9a-z]{6}/.test(html)) return 'svelte';
-  if (/<[a-z]+-[a-z-]+[\s>]/.test(html) && /customElements/.test(html)) return 'web-components';
-  if (/jquery|\$\(document\)\.ready/i.test(html)) return 'jquery';
-  return 'unknown';
-}
-
-/**
- * Resolve a component name from an element record, most trustworthy source
- * first. detection_method is reported alongside so a reader can tell a
- * devtools-sourced name from an inference.
- */
-function resolveComponentName(el) {
-  const attrs = el.attributes || el.attrs || {};
-  const candidates = [
-    ['data-component', attrs['data-component']],
-    ['data-component', attrs['data-component-name']],
-    ['devtools-attribute', attrs['data-testid-component']],
-    ['data-testid', attrs['data-testid'] || attrs['data-test-id'] || attrs['data-test']],
-    ['aria-label', attrs['aria-label']],
-  ];
-  for (const [method, value] of candidates) {
-    if (value) return { name: String(value), method };
-  }
-  if (el.role) return { name: `${el.tag || 'element'}[role=${el.role}]`, method: 'aria-label' };
-  return { name: el.tag ? String(el.tag) : 'unknown', method: 'inferred' };
-}
-
-/**
- * Map a component name or testid back to the source file that defines it.
- * grep-based and therefore best-effort: source_basis records how the match was
- * made so a wrong guess is auditable rather than silently authoritative.
- */
-function resolveSourceFile(name, repoRoot) {
-  if (!name || name === 'unknown') return null;
-  const bare = name.replace(/[^A-Za-z0-9_-]/g, '');
-  if (bare.length < 3) return null;
-
-  const attempts = [
-    { pattern: `(function|const|class)\\s+${bare}\\b`, basis: `declaration of ${bare}` },
-    { pattern: `data-testid=["']${bare}["']`, basis: `data-testid="${bare}" literal` },
-    { pattern: `\\b${bare}\\b`, basis: `name occurrence ${bare}` },
-  ];
-
-  for (const { pattern, basis } of attempts) {
-    const res = spawnSync(
-      'grep',
-      ['-rEl', '--include=*.tsx', '--include=*.jsx', '--include=*.ts', '--include=*.js',
-       '--include=*.vue', '--include=*.svelte', '--include=*.html',
-       '--exclude-dir=node_modules', '--exclude-dir=dist', '--exclude-dir=.git',
-       pattern, repoRoot],
-      { encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024 }
-    );
-    if (res.status === 0) {
-      const hits = String(res.stdout).trim().split('\n').filter(Boolean);
-      if (hits.length > 0 && hits.length <= 5) {
-        return { file: path.relative(repoRoot, hits[0]) || hits[0], basis, ambiguous: hits.length > 1 };
-      }
-    }
-  }
-  return null;
-}
-
-/** Most frequent recent author of a file — a triage hint, never an assignment. */
-function resolveOwner(file, repoRoot) {
-  if (!file) return null;
-  const res = spawnSync('git', ['log', '-n', '20', '--format=%an', '--', file], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    timeout: 15000,
-  });
-  if (res.status !== 0) return null;
-  const counts = {};
-  for (const author of String(res.stdout).trim().split('\n').filter(Boolean)) {
-    counts[author] = (counts[author] || 0) + 1;
-  }
-  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  return ranked.length ? ranked[0][0] : null;
-}
-
-
-/**
- * Read a list out of an engine response regardless of which field it arrived
- * under. The engines disagree — qe-browser's assert.js reads a bare array or
- * `.entries`, while other responses use `.messages`/`.requests`. A mismatch
- * here is silent: it yields an empty list, so a page full of console errors
- * would look clean and the report would omit its most important evidence.
- */
-function normalizeList(payload, fields) {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== 'object') return [];
-  for (const f of fields) {
-    if (Array.isArray(payload[f])) return payload[f];
-  }
-  return [];
-}
-
 
 /** Current page URL, or null when there is no live session yet. */
 function currentUrl() {
@@ -320,74 +223,59 @@ function main() {
     ]);
   }
 
-  const html = vibium(['source'], { allowFail: true }) || '';
-  const framework = detectFramework(html);
-  const map = vibiumJson(['map'], { allowFail: true });
-  const elements = (map && (map.elements || map.refs || map.nodes)) || [];
-  if (elements.length === 0) warnings.push('vibium map returned no elements; component attribution is page-level only.');
+  // Probes catch their own failures, so they get the throwing wrapper.
+  const run = (a, o = {}) => vibium(a, o);
+  const engineName = engine.selectedEngine();
+  const framework = probe.probeFramework(run);
+  const ctx = { repoRoot, warnings, resolveSource: shouldResolveSource(String(args.url), args) };
+  if (!ctx.resolveSource) {
+    warnings.push('Skipped source-file lookup: the page is not local and no --repo-root was given, so grepping this checkout would attribute the component to an unrelated file.');
+  }
 
-  // --- Pick the failing element --------------------------------------------
+  // --- Attribute the failing element ---------------------------------------
   const wanted = args.selector || args.testid;
-  let target = null;
   if (wanted) {
-    target = elements.find((el) => {
-      const attrs = el.attributes || el.attrs || {};
-      return (
-        el.selector === wanted ||
-        attrs['data-testid'] === args.testid ||
-        attrs['data-test-id'] === args.testid ||
-        (el.selector && args.selector && el.selector.includes(args.selector))
-      );
-    });
-    if (!target) warnings.push(`No element matched ${wanted}; falling back to page-level attribution.`);
+    const t = probe.probeTarget(run, { selector: args.selector, testid: args.testid });
+    if (t && t.found) {
+      if (t.count > 1) warnings.push(`${t.query} matched ${t.count} elements; attributed the first.`);
+      components.push(targetComponent(t, framework, ctx));
+      if (t.container) components.push(containerComponent(t.container, framework));
+      evidence.push(stateEvidence(t));
+    } else {
+      warnings.push(t && t.error ? t.error : `No element matched ${wanted}; falling back to page-level attribution.`);
+    }
   } else {
     warnings.push('Neither --selector nor --testid given: the failing element is unidentified. Attribution is page-level.');
   }
 
-  const chosen = target ? [target] : elements.slice(0, 3);
-  chosen.forEach((el, i) => {
-    const attrs = el.attributes || el.attrs || {};
-    const { name, method } = resolveComponentName(el);
-    const source = resolveSourceFile(name, repoRoot);
-    if (source?.ambiguous) warnings.push(`source_file for ${name} matched multiple files; verify before trusting it.`);
-    const owner = source ? resolveOwner(source.file, repoRoot) : null;
-
-    components.push({
-      id: lib.componentId(i),
-      role_in_defect: target && i === 0 ? 'failing' : 'container',
-      selector: el.selector || el.css || `*[data-testid="${attrs['data-testid'] || 'unknown'}"]`,
-      dom_path: (el.path || el.ancestors || []).map((n) => ({
-        tag: n.tag || n.tagName || 'div',
-        ...(n.id ? { id: n.id } : {}),
-        ...(n.classes ? { classes: [].concat(n.classes).slice(0, 30) } : {}),
-        ...(n.role ? { role: n.role } : {}),
-        ...(n.testid ? { testid: n.testid } : {}),
-      })),
-      framework_component: name,
-      framework,
-      detection_method: method,
-      ...(attrs['data-testid'] ? { testid: attrs['data-testid'] } : {}),
-      aria: {
-        ...(el.role || attrs.role ? { role: el.role || attrs.role } : {}),
-        ...(attrs['aria-label'] ? { label: attrs['aria-label'] } : {}),
-      },
-      ...(el.text ? { text_content: String(el.text).slice(0, 400) } : {}),
-      ...(el.box || el.rect ? { bounding_box: el.box || el.rect } : {}),
-      state_snapshot: {
-        disabled: attrs.disabled !== undefined || el.disabled === true,
-        ...(attrs['aria-invalid'] ? { 'aria-invalid': attrs['aria-invalid'] } : {}),
-        ...(el.visible !== undefined ? { visible: el.visible } : {}),
-        ...(attrs.value !== undefined ? { value: String(attrs.value).slice(0, 200) } : {}),
-      },
-      ...(source ? { source_file: source.file, source_basis: source.basis } : {}),
-      ...(owner ? { owner } : {}),
+  if (components.length === 0) {
+    const elements = probe.parseMap(vibiumJson(['map'], { allowFail: true }));
+    if (elements.length === 0) warnings.push('The engine map returned no interactive elements, so there is nothing to attribute.');
+    elements.slice(0, 3).forEach((el, i) => {
+      const { name, method } = resolveComponentName(el);
+      components.push({
+        id: lib.componentId(i),
+        role_in_defect: 'container',
+        selector: el.selector || el.ref,
+        framework_component: name,
+        framework,
+        detection_method: method,
+        ...(el.text ? { text_content: String(el.text).slice(0, 400) } : {}),
+      });
     });
-  });
+  }
 
   // --- Console + network evidence ------------------------------------------
-  const consoleMsgs = vibiumJson(['console'], { allowFail: true });
-  const consoleList = normalizeList(consoleMsgs, ['entries', 'messages', 'logs']);
-  for (const msg of consoleList) {
+  // An engine that cannot observe console or network must say so. An empty
+  // list reads as "nothing went wrong", which is a different and false claim.
+  const con = probe.probeConsole(run);
+  if (con.unsupported) {
+    warnings.push(
+      `Console messages were NOT captured: ${con.reason} (engine: ${engineName}). This does not mean no errors occurred. ` +
+        'Re-run with QE_BROWSER_ENGINE=playwright, which records them, or add them to evidence[] by hand.'
+    );
+  }
+  for (const msg of con.entries) {
     const level = String(msg.level || msg.type || 'log').toLowerCase();
     if (!['error', 'warning', 'warn', 'severe'].includes(level)) continue;
     evidence.push({
@@ -397,15 +285,34 @@ function main() {
       summary: String(msg.text || msg.message || '').slice(0, 600),
       ...(msg.timestamp ? { timestamp: new Date(msg.timestamp).toISOString() } : {}),
       ...(msg.stack ? { detail: String(msg.stack).slice(0, 20000) } : {}),
-      source: 'browser-console',
+      source: con.source === 'engine' ? 'browser-console' : con.source,
       ...(components[0] ? { component_ref: components[0].id } : {}),
     });
   }
 
-  const net = vibiumJson(['network'], { allowFail: true });
-  const requests = normalizeList(net, ['entries', 'requests']);
-  for (const req of requests) {
+  const net = probe.probeNetwork(run);
+  if (net.unsupported) {
+    warnings.push(`Network activity was NOT captured: ${net.reason} (engine: ${engineName}), and the Resource Timing fallback was unavailable.`);
+  } else if (net.source === 'resource-timing') {
+    warnings.push(
+      `Network evidence came from the browser's Resource Timing API because ${net.engineGap}: URLs, status and timing only — no methods or headers, so no correlation ID.`
+    );
+  }
+  if (!net.unsupported && net.entries.length === 0) warnings.push('No fetch/XHR requests were observed on this page.');
+  for (const req of net.entries) {
     const status = req.status || req.response?.status;
+    if (net.source === 'resource-timing' && !status) {
+      evidence.push({
+        id: lib.evidenceId(evidence.length),
+        layer: 'network',
+        kind: 'http-request',
+        summary: `${req.initiator} ${String(req.url || '').slice(0, 400)} (status not exposed by the browser)`,
+        ...(req.timestamp ? { timestamp: new Date(req.timestamp).toISOString() } : {}),
+        ...(req.duration !== undefined ? { detail: `duration_ms=${req.duration}` } : {}),
+        source: 'resource-timing',
+      });
+      continue;
+    }
     const failed = status === undefined || status === 0 || status >= 400;
     const headers = req.response?.headers || req.responseHeaders || {};
     const correlation =
@@ -414,14 +321,13 @@ function main() {
       id: lib.evidenceId(evidence.length),
       layer: 'network',
       kind: failed ? 'failed-request' : 'http-response',
-      summary: `${req.method || 'GET'} ${String(req.url || '').slice(0, 400)} -> ${status ?? 'no response'}`,
+      summary: `${req.method || req.initiator || 'GET'} ${String(req.url || '').slice(0, 400)} -> ${status ?? 'no response'}`,
       ...(req.timestamp ? { timestamp: new Date(req.timestamp).toISOString() } : {}),
       ...(correlation ? { correlation_id: String(correlation) } : {}),
       ...(req.duration !== undefined ? { detail: `duration_ms=${req.duration}` } : {}),
-      source: 'vibium-network',
+      source: net.source === 'engine' ? `${engineName}-network` : net.source,
     });
   }
-  if (requests.length === 0) warnings.push('No network activity captured; a cross-layer correlation ID may be unavailable.');
 
   // --- Screenshot -----------------------------------------------------------
   const shotPath = args.screenshot || path.join('.aqe', 'defect-reports', `capture-${Date.now()}.png`);
@@ -437,10 +343,16 @@ function main() {
   const captured = { url: String(args.url), framework, components, evidence, attachments };
   if (args.out) lib.writeJson(args.out, captured);
 
+  // `partial` whenever something the report would want is missing — the named
+  // element was not found, or the engine could not observe console/network —
+  // so a caller never mistakes an incomplete capture for a complete one.
+  const targetMissing = Boolean(wanted) && components[0]?.role_in_defect !== 'failing';
+  const complete = !targetMissing && !con.unsupported && !net.unsupported && evidence.length > 0;
+
   lib.emit(
     lib.envelope(
       OP,
-      evidence.length === 0 ? 'partial' : 'success',
+      complete ? 'success' : 'partial',
       {
         summary:
           `Captured ${components.length} component(s) and ${evidence.length} evidence item(s) from ${args.url} ` +
